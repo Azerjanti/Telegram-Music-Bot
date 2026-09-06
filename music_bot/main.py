@@ -11,6 +11,7 @@ from music_bot.config import Settings
 from music_bot.database import Database, SupabaseDatabase
 from music_bot.downloader import YouTubeProvider
 from music_bot.handlers.callbacks import callback_query
+from music_bot.handlers.favorites import show_favorites
 from music_bot.handlers.search import text_search
 from music_bot.handlers.start import menu_action, start
 from music_bot.handlers.voice import voice_search
@@ -66,12 +67,13 @@ async def run() -> None:
             os.getenv("SPOTIFY_TOP_PLAYLIST_ID"),
         )
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler(["like", "favorites"], show_favorites))
     application.add_handler(CallbackQueryHandler(callback_query))
-    application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_search))
+    application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.ALL, voice_search))
     application.add_handler(
         MessageHandler(
             filters.TEXT
-            & filters.Regex(r"^(Поиск песни|Топ 100|Поиск по исполнителю|Локальный топ|Поиск по голосу)$"),
+            & filters.Regex(r"^(Поиск песни|Топ 100|По исполнителю|Поиск по исполнителю|Избранное|Локальный топ|Поиск по голосу)$"),
             menu_action,
         )
     )

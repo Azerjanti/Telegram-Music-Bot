@@ -5,7 +5,8 @@ from telegram.ext import ContextTypes
 MENU = ReplyKeyboardMarkup(
     [
         [KeyboardButton("Поиск песни"), KeyboardButton("Топ 100")],
-        [KeyboardButton("Поиск по исполнителю"), KeyboardButton("Локальный топ")],
+        [KeyboardButton("По исполнителю"), KeyboardButton("Избранное")],
+        [KeyboardButton("Локальный топ")],
         [KeyboardButton("Поиск по голосу")],
     ],
     resize_keyboard=True,
@@ -29,7 +30,7 @@ async def menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if choice == "Поиск песни":
         context.user_data["mode"] = "song"
         await message.reply_text("Напишите название песни или исполнителя.")
-    elif choice == "Поиск по исполнителю":
+    elif choice in {"Поиск по исполнителю", "По исполнителю"}:
         context.user_data["mode"] = "artist"
         await message.reply_text("Напишите имя исполнителя.")
     elif choice == "Поиск по голосу":
@@ -43,3 +44,7 @@ async def menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         from music_bot.handlers.search import send_local_top
 
         await send_local_top(update, context, limit=50, title="Локальный топ")
+    elif choice == "Избранное":
+        from music_bot.handlers.favorites import show_favorites
+
+        await show_favorites(update, context)

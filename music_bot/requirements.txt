@@ -3,6 +3,7 @@ asyncpg>=0.30,<1
 rapidfuzz>=3.14,<4
 yt-dlp>=2025.1
 shazamio>=0.8,<1
+audioop-lts>=0.2
 python-dotenv>=1.1,<2
 httpx>=0.28,<1
 spotipy>=2.25,<3

@@ -1,19 +1,111 @@
 from __future__ import annotations
 
+import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from music_bot.handlers.favorites import favorites_markup
 from music_bot.handlers.search import send_local_top
 from music_bot.services import MusicService
+
+logger = logging.getLogger(__name__)
 
 
 async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
         return
-    await query.answer()
     service: MusicService = context.application.bot_data["music_service"]
     data = query.data or ""
+    user = query.from_user
+    if data.startswith("favorite:add:") or data.startswith("favorite:remove:"):
+        song_id = int(data.rsplit(":", 1)[1])
+        song = await service.database.get_song(song_id)
+        if not song:
+            await query.answer("Трек больше недоступен.", show_alert=True)
+            return
+        if data.startswith("favorite:add:"):
+            try:
+                await service.database.add_favorite(user.id, song)
+            except Exception:
+                logger.exception("Could not add favorite for user %s", user.id)
+                await query.answer("Не удалось сохранить трек в избранное.", show_alert=True)
+                return
+            await query.answer("❤️ Добавлено в избранное!")
+            if query.message:
+                await query.message.edit_reply_markup(
+                    reply_markup=service.track_actions(song, is_favorite=True)
+                )
+        else:
+            try:
+                await service.database.remove_favorite(user.id, song.file_id)
+            except Exception:
+                logger.exception("Could not remove favorite for user %s", user.id)
+                await query.answer("Не удалось удалить трек из избранного.", show_alert=True)
+                return
+            await query.answer("💔 Удалено из избранного")
+            if query.message:
+                await query.message.edit_reply_markup(
+                    reply_markup=service.track_actions(song, is_favorite=False)
+                )
+        return
+    if data.startswith("favorite:play:"):
+        favorite_id = int(data.rsplit(":", 1)[1])
+        try:
+            favorite = await service.database.get_favorite(user.id, favorite_id)
+        except Exception:
+            logger.exception("Could not load favorite %s for user %s", favorite_id, user.id)
+            await query.answer("Избранное временно недоступно.", show_alert=True)
+            return
+        if not favorite:
+            await query.answer("Трек уже удалён.", show_alert=True)
+            return
+        song = await service.database.get_song_by_file_id(favorite.file_id)
+        if query.message:
+            await query.message.reply_audio(
+                audio=favorite.file_id,
+                title=favorite.title,
+                performer=favorite.artist,
+                reply_markup=(
+                    service.track_actions(song, is_favorite=True)
+                    if song
+                    else None
+                ),
+            )
+        if song:
+            await service.database.increment_play_count(song.id)
+        await query.answer()
+        return
+    if data.startswith("favorite:delete:"):
+        favorite_id = int(data.rsplit(":", 1)[1])
+        try:
+            favorite = await service.database.get_favorite(user.id, favorite_id)
+        except Exception:
+            logger.exception("Could not load favorite %s for user %s", favorite_id, user.id)
+            await query.answer("Избранное временно недоступно.", show_alert=True)
+            return
+        if not favorite:
+            await query.answer("Трек уже удалён.", show_alert=True)
+            return
+        try:
+            await service.database.delete_favorite(user.id, favorite_id)
+            remaining = await service.database.list_favorites(user.id)
+        except Exception:
+            logger.exception("Could not delete favorite %s for user %s", favorite_id, user.id)
+            await query.answer("Не удалось удалить трек из избранного.", show_alert=True)
+            return
+        await query.answer("🗑 Удалено из избранного")
+        if query.message:
+            if remaining:
+                await query.message.edit_text(
+                    "❤️ Избранные треки:",
+                    reply_markup=favorites_markup(remaining),
+                )
+            else:
+                await query.message.edit_text("В избранном пока нет треков.")
+        return
+    await query.answer()
     if data.startswith("artist:"):
         artist = data.removeprefix("artist:")
         songs = await service.database.artist_songs(artist)

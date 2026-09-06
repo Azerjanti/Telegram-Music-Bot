@@ -1,4 +1,4 @@
-from .db import Database, Song
+from .db import Database, Favorite, Song
 from .supabase import SupabaseDatabase
 
-__all__ = ["Database", "Song", "SupabaseDatabase"]
+__all__ = ["Database", "Favorite", "Song", "SupabaseDatabase"]

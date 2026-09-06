@@ -19,6 +19,14 @@ class Song:
     play_count: int
 
 
+@dataclass(frozen=True)
+class Favorite:
+    id: int
+    file_id: str
+    title: str
+    artist: str
+
+
 class Database:
     def __init__(self, database_url: str | None, sqlite_path: Path) -> None:
         self.database_url = database_url
@@ -63,10 +71,27 @@ class Database:
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """
+        favorites_sql = """
+            CREATE TABLE IF NOT EXISTS favorites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                file_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, file_id)
+            )
+        """
         if self.is_postgres:
             sql = sql.format(serial="GENERATED ALWAYS AS IDENTITY")
             async with self._pool.acquire() as connection:
                 await connection.execute(sql)
+                await connection.execute(
+                    favorites_sql.replace(
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT",
+                        "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY",
+                    ).replace("user_id INTEGER", "user_id BIGINT")
+                )
                 await connection.execute(
                     "CREATE INDEX IF NOT EXISTS songs_artist_idx ON songs (normalized_artist)"
                 )
@@ -77,8 +102,12 @@ class Database:
             sql = sql.format(serial="")
             async with self._lock:
                 self._sqlite.execute(sql)
+                self._sqlite.execute(favorites_sql)
                 self._sqlite.execute("CREATE INDEX IF NOT EXISTS songs_artist_idx ON songs (normalized_artist)")
                 self._sqlite.execute("CREATE INDEX IF NOT EXISTS songs_plays_idx ON songs (play_count DESC)")
+                self._sqlite.execute(
+                    "CREATE INDEX IF NOT EXISTS favorites_user_idx ON favorites (user_id, created_at DESC)"
+                )
                 self._sqlite.commit()
 
     @staticmethod
@@ -159,6 +188,15 @@ class Database:
                 row = self._sqlite.execute("SELECT * FROM songs WHERE id = ?", (song_id,)).fetchone()
         return self._row_to_song(row) if row else None
 
+    async def get_song_by_file_id(self, file_id: str) -> Song | None:
+        if self.is_postgres:
+            async with self._pool.acquire() as connection:
+                row = await connection.fetchrow("SELECT * FROM songs WHERE file_id = $1", file_id)
+        else:
+            async with self._lock:
+                row = self._sqlite.execute("SELECT * FROM songs WHERE file_id = ?", (file_id,)).fetchone()
+        return self._row_to_song(row) if row else None
+
     async def increment_play_count(self, song_id: int) -> None:
         if self.is_postgres:
             async with self._pool.acquire() as connection:
@@ -192,3 +230,125 @@ class Database:
             async with self._lock:
                 rows = self._sqlite.execute("SELECT * FROM songs ORDER BY play_count DESC, title LIMIT ?", (limit,)).fetchall()
         return [self._row_to_song(row) for row in rows]
+
+    @staticmethod
+    def _row_to_favorite(row: Any) -> Favorite:
+        values = dict(row)
+        return Favorite(
+            id=int(values["id"]),
+            file_id=values["file_id"],
+            title=values["title"],
+            artist=values["artist"],
+        )
+
+    async def is_favorite(self, user_id: int, file_id: str) -> bool:
+        if self.is_postgres:
+            async with self._pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    "SELECT id FROM favorites WHERE user_id = $1 AND file_id = $2",
+                    user_id,
+                    file_id,
+                )
+        else:
+            async with self._lock:
+                row = self._sqlite.execute(
+                    "SELECT id FROM favorites WHERE user_id = ? AND file_id = ?",
+                    (user_id, file_id),
+                ).fetchone()
+        return bool(row)
+
+    async def add_favorite(self, user_id: int, song: Song) -> Favorite:
+        if self.is_postgres:
+            async with self._pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    """
+                    INSERT INTO favorites (user_id, file_id, title, artist)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (user_id, file_id) DO UPDATE SET title = EXCLUDED.title, artist = EXCLUDED.artist
+                    RETURNING *
+                    """,
+                    user_id,
+                    song.file_id,
+                    song.title,
+                    song.artist,
+                )
+        else:
+            async with self._lock:
+                self._sqlite.execute(
+                    """
+                    INSERT INTO favorites (user_id, file_id, title, artist)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, file_id) DO UPDATE SET title = excluded.title, artist = excluded.artist
+                    """,
+                    (user_id, song.file_id, song.title, song.artist),
+                )
+                self._sqlite.commit()
+                row = self._sqlite.execute(
+                    "SELECT * FROM favorites WHERE user_id = ? AND file_id = ?",
+                    (user_id, song.file_id),
+                ).fetchone()
+        return self._row_to_favorite(row)
+
+    async def remove_favorite(self, user_id: int, file_id: str) -> None:
+        if self.is_postgres:
+            async with self._pool.acquire() as connection:
+                await connection.execute(
+                    "DELETE FROM favorites WHERE user_id = $1 AND file_id = $2",
+                    user_id,
+                    file_id,
+                )
+        else:
+            async with self._lock:
+                self._sqlite.execute(
+                    "DELETE FROM favorites WHERE user_id = ? AND file_id = ?",
+                    (user_id, file_id),
+                )
+                self._sqlite.commit()
+
+    async def list_favorites(self, user_id: int, limit: int = 50) -> list[Favorite]:
+        if self.is_postgres:
+            async with self._pool.acquire() as connection:
+                rows = await connection.fetch(
+                    "SELECT * FROM favorites WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+                    user_id,
+                    limit,
+                )
+        else:
+            async with self._lock:
+                rows = self._sqlite.execute(
+                    "SELECT * FROM favorites WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                    (user_id, limit),
+                ).fetchall()
+        return [self._row_to_favorite(row) for row in rows]
+
+    async def get_favorite(self, user_id: int, favorite_id: int) -> Favorite | None:
+        if self.is_postgres:
+            async with self._pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    "SELECT * FROM favorites WHERE user_id = $1 AND id = $2",
+                    user_id,
+                    favorite_id,
+                )
+        else:
+            async with self._lock:
+                row = self._sqlite.execute(
+                    "SELECT * FROM favorites WHERE user_id = ? AND id = ?",
+                    (user_id, favorite_id),
+                ).fetchone()
+        return self._row_to_favorite(row) if row else None
+
+    async def delete_favorite(self, user_id: int, favorite_id: int) -> None:
+        if self.is_postgres:
+            async with self._pool.acquire() as connection:
+                await connection.execute(
+                    "DELETE FROM favorites WHERE user_id = $1 AND id = $2",
+                    user_id,
+                    favorite_id,
+                )
+        else:
+            async with self._lock:
+                self._sqlite.execute(
+                    "DELETE FROM favorites WHERE user_id = ? AND id = ?",
+                    (user_id, favorite_id),
+                )
+                self._sqlite.commit()

@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from music_bot.database.db import Song
+from music_bot.database.db import Favorite, Song
 from music_bot.search_engine import normalize, similarity
 
 
@@ -78,6 +78,14 @@ class SupabaseDatabase:
         )
         return self._row_to_song(rows[0]) if rows else None
 
+    async def get_song_by_file_id(self, file_id: str) -> Song | None:
+        rows = await self._request(
+            "GET",
+            self.table,
+            params={"select": "*", "file_id": f"eq.{file_id}", "limit": "1"},
+        )
+        return self._row_to_song(rows[0]) if rows else None
+
     async def save_song(self, title: str, artist: str, file_id: str, source_url: str | None) -> Song:
         payload = {
             "title": title,
@@ -130,3 +138,82 @@ class SupabaseDatabase:
             params={"select": "*", "order": "play_count.desc,title.asc", "limit": str(limit)},
         )
         return [self._row_to_song(row) for row in rows or []]
+
+    @staticmethod
+    def _row_to_favorite(row: dict[str, Any]) -> Favorite:
+        return Favorite(
+            id=int(row["id"]),
+            file_id=row["file_id"],
+            title=row["title"],
+            artist=row["artist"],
+        )
+
+    async def is_favorite(self, user_id: int, file_id: str) -> bool:
+        rows = await self._request(
+            "GET",
+            "favorites",
+            params={
+                "select": "id",
+                "user_id": f"eq.{user_id}",
+                "file_id": f"eq.{file_id}",
+                "limit": "1",
+            },
+        )
+        return bool(rows)
+
+    async def add_favorite(self, user_id: int, song: Song) -> Favorite:
+        rows = await self._request(
+            "POST",
+            "favorites",
+            params={"on_conflict": "user_id,file_id"},
+            headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+            json={
+                "user_id": user_id,
+                "file_id": song.file_id,
+                "title": song.title,
+                "artist": song.artist,
+            },
+        )
+        if not rows:
+            raise RuntimeError("Supabase did not return the saved favorite")
+        return self._row_to_favorite(rows[0])
+
+    async def remove_favorite(self, user_id: int, file_id: str) -> None:
+        await self._request(
+            "DELETE",
+            "favorites",
+            params={"user_id": f"eq.{user_id}", "file_id": f"eq.{file_id}"},
+        )
+
+    async def list_favorites(self, user_id: int, limit: int = 50) -> list[Favorite]:
+        rows = await self._request(
+            "GET",
+            "favorites",
+            params={
+                "select": "*",
+                "user_id": f"eq.{user_id}",
+                "order": "created_at.desc",
+                "limit": str(limit),
+            },
+        )
+        return [self._row_to_favorite(row) for row in rows or []]
+
+    async def get_favorite(self, user_id: int, favorite_id: int) -> Favorite | None:
+        rows = await self._request(
+            "GET",
+            "favorites",
+            params={
+                "select": "*",
+                "user_id": f"eq.{user_id}",
+                "id": f"eq.{favorite_id}",
+                "limit": "1",
+            },
+        )
+        return self._row_to_favorite(rows[0]) if rows else None
+
+    async def delete_favorite(self, user_id: int, favorite_id: int) -> None:
+        await self._request(
+            "DELETE",
+            "favorites",
+            params={"user_id": f"eq.{user_id}", "id": f"eq.{favorite_id}"},
+        )

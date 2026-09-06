@@ -1,0 +1,95 @@
+Fix and improve the existing Telegram music bot:
+
+1. VOICE & FILE RECOGNITION FIX:
+- When user sends voice message (.ogg format):
+  a) Download the voice file from Telegram
+  b) Convert .ogg to .mp3 using ffmpeg:
+     ffmpeg -i input.ogg output.mp3
+  c) Run shazamio on the converted file:
+     shazam = Shazam()
+     result = await shazam.recognize('output.mp3')
+  d) If recognized → download and send full song
+  e) If not → "Песня не распознана 😔"
+
+- When user sends audio/document file:
+  a) Download file from Telegram
+  b) If not mp3, convert with ffmpeg
+  c) Run shazamio same way
+  d) Send result
+
+2. LOADING INDICATOR FIX:
+- Remove "печатает..." (typing indicator)
+- Instead send a message: "⏳ Скачиваю трек..."
+- After song is sent, DELETE that message
+- Code:
+  loading_msg = await message.reply("⏳ Скачиваю трек...")
+  # ... download song ...
+  await bot.send_audio(...)
+  await loading_msg.delete()
+
+3. SEARCH HEADER MESSAGE:
+- When user searches, FIRST send this message:
+  "🔍 Поиск по запросу: {query}"
+  Then send the song list as separate message:
+  "🎵 Выберите песню:"
+  [song buttons...]
+- Exactly like the screenshots
+
+4. HEART BUTTON & FAVORITES:
+- After sending song, show these buttons:
+  [❤️] [🎤 Исполнитель]
+  
+- When user clicks ❤️:
+  a) Save song to favorites table in Supabase:
+     CREATE TABLE favorites (
+       id SERIAL PRIMARY KEY,
+       user_id BIGINT,
+       file_id TEXT,
+       title TEXT,
+       artist TEXT,
+       created_at TIMESTAMP DEFAULT NOW()
+     );
+  b) Answer callback: "❤️ Добавлено в избранное!"
+  c) Change button to: [💔 Удалить из избранного]
+
+- Add /like command or "Понравившиеся треки" button:
+  Shows user's saved favorites as list
+  Each with [▶️ Слушать] [🗑 Удалить] buttons
+
+5. MENU BUTTON:
+- "Меню" button shows these options:
+  [🔍 Поиск] 
+  [🎵 Топ 100]
+  [🎤 По исполнителю]
+  [❤️ Избранное]
+  [📻 Локальный топ]
+  [🎙 Поиск по голосу]
+
+6. SEARCH FLOW (exactly like screenshots):
+User types anything →
+Bot sends: "🔍 Поиск по запросу: {user_query}"
+Then sends song list with buttons →
+User clicks song →
+Bot sends: "⏳ Скачиваю трек..."
+Bot downloads and sends audio →
+Deletes loading message →
+Shows audio with [❤️] [🎤 Исполнитель] buttons
+
+7. CREATE favorites TABLE in Supabase:
+Add this SQL:
+CREATE TABLE IF NOT EXISTS favorites (
+  id SERIAL PRIMARY KEY,
+  user_id BIGINT,
+  file_id TEXT,
+  title TEXT,
+  artist TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+IMPORTANT:
+- Keep all existing working features
+- Test voice recognition with .ogg files
+- Test document/audio file recognition  
+- All text must be in Russian
+- Delete loading messages after song sent
+- Handle all errors gracefully
