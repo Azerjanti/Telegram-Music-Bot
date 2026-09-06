@@ -32,7 +32,7 @@ class Settings:
         if not token:
             raise RuntimeError("BOT_TOKEN must be set in Replit Secrets")
 
-        cache_dir = Path(os.getenv("AUDIO_CACHE_DIR", "music_bot/.cache/audio"))
+        cache_dir = Path(os.getenv("AUDIO_CACHE_DIR", "/tmp/music-bot/audio"))
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cls(
             bot_token=token,

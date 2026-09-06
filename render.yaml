@@ -1,15 +1,17 @@
 services:
   - type: worker
-    name: telegram-music-bot
+    name: music-bot
     runtime: python
-    buildCommand: pip install -r music_bot/requirements.txt
-    startCommand: python -m music_bot.main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: DATABASE_URL
+      - key: SPOTIFY_CLIENT_ID
         sync: false
-      - key: ENABLE_YTDLP_DOWNLOADS
-        value: "true"
-      - key: ENABLE_SHAZAM
-        value: "true"
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false

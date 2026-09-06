@@ -11,7 +11,7 @@
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required secret: `BOT_TOKEN`
-- Optional env: `DATABASE_URL` for PostgreSQL; without it the bot uses a local SQLite file
+- Optional env: `DATABASE_URL` for PostgreSQL; without it the bot uses a local SQLite file in `/tmp`
 
 ## Stack
 
@@ -34,7 +34,7 @@
 
 - The downloader is an adapter and can be replaced with a licensed catalog without changing bot handlers.
 - Telegram `file_id` is the cache key after the first successful send; audio files are removed from local disk afterward.
-- `DATABASE_URL` selects PostgreSQL; local development falls back to SQLite so the bot can boot without provisioning a database.
+- `DATABASE_URL` selects PostgreSQL; local development falls back to SQLite in `/tmp` so the bot can boot without provisioning a database.
 
 ## Product
 

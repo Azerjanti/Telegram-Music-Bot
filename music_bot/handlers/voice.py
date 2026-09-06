@@ -32,7 +32,7 @@ async def voice_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await message.reply_text("Отправьте аудиофайл для распознавания.")
         return
 
-    cache_dir = Path("music_bot/.cache")
+    cache_dir = Path("/tmp/music-bot")
     input_path = cache_dir / f"recognition-{message.message_id}{_input_suffix(message)}"
     mp3_path = cache_dir / f"recognition-{message.message_id}.mp3"
     cache_dir.mkdir(parents=True, exist_ok=True)
