@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: telegram-music-bot
+    runtime: python
+    buildCommand: pip install -r music_bot/requirements.txt
+    startCommand: python -m music_bot.main
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ENABLE_YTDLP_DOWNLOADS
+        value: "true"
+      - key: ENABLE_SHAZAM
+        value: "true"

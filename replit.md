@@ -1,15 +1,17 @@
-# [Project name]
+# Telegram Music Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Асинхронный русскоязычный Telegram-бот для поиска, кэширования и воспроизведения музыкальных треков.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `python -m music_bot.main` — run the Telegram bot and health server
+- `pnpm --filter @workspace/api-server run dev` — run the shared API server (port 5000)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Required secret: `BOT_TOKEN`
+- Optional env: `DATABASE_URL` for PostgreSQL; without it the bot uses a local SQLite file
 
 ## Stack
 
@@ -22,15 +24,21 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `music_bot/main.py` — lifecycle, polling and health server
+- `music_bot/handlers/` — Telegram command, text, callback and voice handlers
+- `music_bot/database/db.py` — PostgreSQL/SQLite persistence and fuzzy lookup
+- `music_bot/downloader/youtube.py` — replaceable audio provider adapter
+- `music_bot/services/music.py` — cache-first send/download flow
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The downloader is an adapter and can be replaced with a licensed catalog without changing bot handlers.
+- Telegram `file_id` is the cache key after the first successful send; audio files are removed from local disk afterward.
+- `DATABASE_URL` selects PostgreSQL; local development falls back to SQLite so the bot can boot without provisioning a database.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Russian-language search, artist lookup, local popularity top, inline actions and optional voice recognition.
 
 ## User preferences
 
@@ -38,7 +46,8 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- `ffmpeg` must be available when `ENABLE_YTDLP_DOWNLOADS=true`.
+- Use the downloader only for content that the bot owner is authorized to distribute.
 
 ## Pointers
 
