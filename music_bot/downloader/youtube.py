@@ -17,12 +17,58 @@ class DownloadedTrack:
     metadata: TrackMetadata
 
 
+@dataclass(frozen=True)
+class SearchResult:
+    title: str
+    artist: str
+    url: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.artist} — {self.title}"[:60]
+
+
 class YouTubeProvider:
     """Optional yt-dlp provider; enable only for content you are allowed to use."""
 
     def __init__(self, output_dir: Path, retries: int = 3) -> None:
         self.output_dir = output_dir
         self.retries = retries
+
+    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        return await asyncio.to_thread(self._search_sync, query, limit)
+
+    def _search_sync(self, query: str, limit: int) -> list[SearchResult]:
+        try:
+            import yt_dlp
+        except ImportError as exc:
+            raise RuntimeError("yt-dlp is not installed") from exc
+
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": True,
+            "default_search": f"ytsearch{limit}",
+            "noplaylist": False,
+        }
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+        results: list[SearchResult] = []
+        for entry in (info or {}).get("entries", []):
+            if not entry:
+                continue
+            video_id = entry.get("id")
+            url = entry.get("webpage_url") or entry.get("url")
+            if not url and video_id:
+                url = f"https://www.youtube.com/watch?v={video_id}"
+            if not url:
+                continue
+            metadata = parse_track_title(
+                entry.get("track") or entry.get("title") or query,
+                entry.get("artist") or entry.get("uploader"),
+            )
+            results.append(SearchResult(metadata.title, metadata.artist, url))
+        return results[:limit]
 
     async def download(self, query: str) -> DownloadedTrack:
         return await asyncio.to_thread(self._download_sync, query)
@@ -52,10 +98,10 @@ class YouTubeProvider:
             ],
         }
         with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query} official audio", download=True)
-            if not info or not info.get("entries"):
+            info = ydl.extract_info(query if _is_url(query) else f"ytsearch1:{query} official audio", download=True)
+            if not info:
                 raise RuntimeError("Аудио не найдено")
-            entry = info["entries"][0]
+            entry = info["entries"][0] if info.get("entries") else info
             source_url = entry.get("webpage_url")
             raw_title = entry.get("track") or entry.get("title") or query
             metadata = parse_track_title(raw_title, entry.get("artist") or entry.get("uploader"))
@@ -71,3 +117,11 @@ class YouTubeProvider:
                 path=path,
                 metadata=TrackMetadata(metadata.title, metadata.artist, source_url),
             )
+
+
+def _is_url(value: str) -> bool:
+    return value.startswith(("https://", "http://")) and (
+        "youtube.com" in value
+        or "youtu.be" in value
+        or "tiktok.com" in value
+    )

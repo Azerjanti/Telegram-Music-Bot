@@ -1,0 +1,91 @@
+Update the existing Telegram music bot with these fixes:
+
+1. SEARCH RESULTS - Show multiple results:
+Instead of sending one song directly, show 
+a list of 10 results as inline buttons:
+
+"🔍 Поиск по запросу: {query}
+Выберите песню:"
+
+[Artist1 - Song1]
+[Artist2 - Song2]
+[Artist3 - Song3]
+... up to 10 results
+
+Search YouTube with: "{query}" and get 
+top 10 results using yt-dlp:
+ydl_opts = {
+    'quiet': True,
+    'extract_flat': True,
+    'default_search': 'ytsearch10'
+}
+User clicks one → bot downloads and sends it.
+
+2. VOICE RECOGNITION - Add shazamio:
+- User sends voice message or audio file
+- Save to temp file
+- Use shazamio:
+  from shazamio import Shazam
+  shazam = Shazam()
+  result = await shazam.recognize(file_path)
+  track = result['track']
+  title = track['title']
+  artist = track['subtitle']
+- Reply: "🎵 Найдена: {title} - {artist}"
+- Auto download and send full song
+- If not recognized: 
+  "Песня не распознана 😔 Попробуйте ещё раз"
+
+3. VIDEO LINK SUPPORT:
+- User sends YouTube or TikTok URL
+- Bot detects it's a link
+- Download audio with yt-dlp
+- Send as audio message
+
+4. SUPABASE CACHE:
+- Before YouTube search, check Supabase first
+- After sending, save file_id to Supabase
+- INCREMENT play_count on each play
+
+5. Make sure ALL features work:
+- /start → menu buttons ✅
+- Text search → 10 results list ✅
+- Voice message → shazam recognize ✅
+- Video link → extract audio ✅
+- Саnatçı search → list songs ✅
+- Top 100 → Spotify or hardcoded list ✅
+- Local top → from Supabase ✅
+
+6. TOP 100 - If Spotify not configured,
+use this hardcoded list:
+TOP_100 = [
+"Sabrina Carpenter - Espresso",
+"Billie Eilish - BIRDS OF A FEATHER", 
+"Chappell Roan - Good Luck Babe",
+"Kendrick Lamar - Not Like Us",
+"Post Malone - Sunflower",
+"The Weeknd - Blinding Lights",
+"Harry Styles - As It Was",
+"Miley Cyrus - Flowers",
+"SZA - Kill Bill",
+"Dua Lipa - Levitating",
+"Taylor Swift - Anti-Hero",
+"Bad Bunny - Tití Me Preguntó",
+"Drake - Rich Flex",
+"Morgan Wallen - Last Night",
+"Peso Pluma - Ella Baila Sola",
+"Jung Kook - Seven",
+"Lana Del Rey - Summertime Sadness",
+"Arctic Monkeys - R U Mine?",
+"Stromae - Santé",
+"David Guetta - Titanium"
+]
+
+Show as numbered buttons, user clicks → send song.
+
+IMPORTANT:
+- Test every single handler before finishing
+- All functions must work end to end
+- Add proper error handling everywhere
+- Keep all existing working code
+- Just fix and add the missing parts

@@ -12,7 +12,7 @@
 - «Топ 100» через Spotify Global Top 50 при наличии Spotify Client ID/Secret; без них используется локальный fallback.
 - Распознавание `voice`/`audio` через `shazamio`, если пакет включён.
 - `GET /health` для мониторинга.
-- PostgreSQL через `DATABASE_URL` с локальным SQLite fallback.
+- Supabase cache через `SUPABASE_URL`/`SUPABASE_KEY`, PostgreSQL через `DATABASE_URL` и локальный SQLite fallback.
 
 ## Запуск
 
@@ -24,6 +24,7 @@ python -m music_bot.main
 
 В Replit токен хранится в Secrets. Для Render задайте `BOT_TOKEN` и `DATABASE_URL` в настройках сервиса; пример `render.yaml` уже добавлен.
 Для Spotify Top 100 добавьте `SPOTIFY_CLIENT_ID` и `SPOTIFY_CLIENT_SECRET`; эти значения также должны храниться в Secrets.
+Для Supabase сначала выполните `supabase/schema.sql` в SQL Editor проекта Supabase. Если таблица недоступна, бот явно пишет причину в лог и временно использует локальное хранилище.
 
 ## Источник аудио и права
 

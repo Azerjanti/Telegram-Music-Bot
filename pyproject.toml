@@ -9,6 +9,8 @@ dependencies = [
     "python-telegram-bot>=22.8",
     "rapidfuzz>=3.14.6",
     "shazamio>=0.8.1",
+    "httpx>=0.28.1",
     "spotipy>=2.25.1",
     "yt-dlp>=2026.8.19",
+    "audioop-lts>=0.2.2",
 ]

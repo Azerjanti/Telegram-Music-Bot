@@ -8,7 +8,7 @@ from pathlib import Path
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from music_bot.config import Settings
-from music_bot.database import Database
+from music_bot.database import Database, SupabaseDatabase
 from music_bot.downloader import YouTubeProvider
 from music_bot.handlers.callbacks import callback_query
 from music_bot.handlers.search import text_search
@@ -29,8 +29,20 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 async def run() -> None:
     settings = Settings.from_env()
-    database = Database(settings.database_url, Path("music_bot/.cache/music.sqlite3"))
-    await database.connect()
+    database = None
+    if settings.supabase_url and settings.supabase_key:
+        try:
+            database = SupabaseDatabase(settings.supabase_url, settings.supabase_key)
+            await database.connect()
+            logger.info("Using Supabase songs cache")
+        except Exception:
+            logger.exception("Supabase cache unavailable; using local database fallback")
+            if database:
+                await database.close()
+            database = None
+    if database is None:
+        database = Database(settings.database_url, Path("music_bot/.cache/music.sqlite3"))
+        await database.connect()
     provider = (
         YouTubeProvider(settings.cache_dir, settings.download_retries)
         if settings.enable_ytdlp

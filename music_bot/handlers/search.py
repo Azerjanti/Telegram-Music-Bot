@@ -2,6 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from music_bot.services import MusicService
+from music_bot.top_charts.hardcoded import TOP_100_FALLBACK
 from music_bot.top_charts import SpotifyProvider
 
 
@@ -22,7 +23,7 @@ async def text_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if mode == "local_top":
         await send_local_top(update, context)
         return
-    await service.send_query(update, context, message.text.strip())
+    await service.show_search_results(update, context, message.text.strip())
 
 
 async def send_local_top(
@@ -55,14 +56,14 @@ async def send_local_top(
 
 async def send_spotify_top(update: Update, context: ContextTypes.DEFAULT_TYPE, limit: int = 50) -> None:
     provider: SpotifyProvider | None = context.application.bot_data.get("spotify_provider")
-    if not provider:
-        await send_local_top(update, context, limit=limit, title="Топ 100 из локального каталога")
-        return
-    try:
-        tracks = await provider.top_tracks(limit)
-    except Exception:
-        await send_local_top(update, context, limit=limit, title="Топ 100 из локального каталога")
-        return
+    tracks = TOP_100_FALLBACK[:limit]
+    if provider:
+        try:
+            spotify_tracks = await provider.top_tracks(limit)
+            if spotify_tracks:
+                tracks = spotify_tracks
+        except Exception:
+            pass
     if not tracks or not update.effective_message:
         await send_local_top(update, context, limit=limit, title="Топ 100 из локального каталога")
         return

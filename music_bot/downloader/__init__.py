@@ -1,3 +1,3 @@
-from .youtube import DownloadedTrack, YouTubeProvider
+from .youtube import DownloadedTrack, SearchResult, YouTubeProvider
 
-__all__ = ["DownloadedTrack", "YouTubeProvider"]
+__all__ = ["DownloadedTrack", "SearchResult", "YouTubeProvider"]

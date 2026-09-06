@@ -150,6 +150,15 @@ class Database:
                 row = self._sqlite.execute("SELECT * FROM songs WHERE file_id = ?", (file_id,)).fetchone()
         return self._row_to_song(row)
 
+    async def get_song(self, song_id: int) -> Song | None:
+        if self.is_postgres:
+            async with self._pool.acquire() as connection:
+                row = await connection.fetchrow("SELECT * FROM songs WHERE id = $1", song_id)
+        else:
+            async with self._lock:
+                row = self._sqlite.execute("SELECT * FROM songs WHERE id = ?", (song_id,)).fetchone()
+        return self._row_to_song(row) if row else None
+
     async def increment_play_count(self, song_id: int) -> None:
         if self.is_postgres:
             async with self._pool.acquire() as connection:

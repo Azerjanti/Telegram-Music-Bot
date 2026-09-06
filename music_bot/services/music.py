@@ -9,7 +9,7 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from music_bot.database import Database, Song
-from music_bot.downloader import YouTubeProvider
+from music_bot.downloader import SearchResult, YouTubeProvider
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,64 @@ class MusicService:
         self.max_file_mb = max_file_mb
         self.download_slots = asyncio.Semaphore(max_concurrent_downloads)
 
-    async def send_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> Song | None:
+    async def show_search_results(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        query: str,
+        limit: int = 10,
+    ) -> None:
+        message = update.effective_message
+        chat = update.effective_chat
+        if not message or not chat:
+            return
+        if _is_media_url(query):
+            await self.send_query(update, context, query, source_url=query)
+            return
+
+        await context.bot.send_chat_action(chat.id, ChatAction.TYPING)
+        cached = await self.database.search_song(query)
+        results: list[tuple[str, str]] = []
+        youtube_results: list[SearchResult] = []
+        if cached:
+            results.append((f"cached:{cached.id}", f"{cached.artist} — {cached.title} (кэш)"))
+
+        if self.provider:
+            try:
+                youtube_results = await self.provider.search(query, limit=limit)
+            except Exception:
+                logger.exception("Search failed for query=%r", query)
+                youtube_results = []
+            for index, result in enumerate(youtube_results):
+                results.append((f"result:{index}", result.label))
+
+        results = results[:limit]
+        if not results:
+            await message.reply_text("По запросу ничего не найдено. Попробуйте изменить запрос.")
+            return
+
+        context.chat_data["search_results"] = {
+            str(index): result.url
+            for index, result in enumerate(
+                youtube_results[: max(0, limit - (1 if cached else 0))],
+            )
+        }
+        from telegram import InlineKeyboardButton
+
+        await message.reply_text(
+            f"Поиск по запросу: {query}\nВыберите песню:",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton(label, callback_data=callback)] for callback, label in results]
+            ),
+        )
+
+    async def send_query(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        query: str,
+        source_url: str | None = None,
+    ) -> Song | None:
         message = update.effective_message
         chat = update.effective_chat
         if not message or not chat:
@@ -48,7 +105,7 @@ class MusicService:
 
         async with self.download_slots:
             try:
-                downloaded = await self.provider.download(query)
+                downloaded = await self.provider.download(source_url or query)
                 if downloaded.path.stat().st_size > self.max_file_mb * 1024 * 1024:
                     raise RuntimeError("Файл превышает лимит Telegram")
                 with downloaded.path.open("rb") as audio:
@@ -114,3 +171,11 @@ class MusicService:
         for path in cache_dir.glob("*"):
             if path.is_file():
                 path.unlink(missing_ok=True)
+
+
+def _is_media_url(value: str) -> bool:
+    return value.startswith(("https://", "http://")) and (
+        "youtube.com" in value
+        or "youtu.be" in value
+        or "tiktok.com" in value
+    )

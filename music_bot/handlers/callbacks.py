@@ -30,10 +30,22 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if data.startswith("song:"):
         song_id = int(data.removeprefix("song:"))
-        for song in await service.database.top_songs(100):
-            if song.id == song_id:
-                await service.send_song(update, song)
-                return
+        song = await service.database.get_song(song_id)
+        if song:
+            await service.send_song(update, song)
+        return
+    if data.startswith("cached:"):
+        song_id = int(data.removeprefix("cached:"))
+        song = await service.database.get_song(song_id)
+        if song:
+            await service.send_song(update, song)
+        return
+    if data.startswith("result:"):
+        result_id = data.removeprefix("result:")
+        source_url = context.chat_data.get("search_results", {}).get(result_id)
+        if source_url:
+            await service.send_query(update, context, source_url, source_url=source_url)
+        return
     if data.startswith("top:"):
         track_query = context.chat_data.get("top_tracks", {}).get(data.removeprefix("top:"))
         if track_query:

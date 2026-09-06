@@ -1,0 +1,1 @@
+- [Shazamio on Python 3.13](python313-shazamio.md) — keep audioop-lts installed because Python 3.13 removed audioop.

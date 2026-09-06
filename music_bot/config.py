@@ -16,6 +16,8 @@ def _as_bool(name: str, default: bool) -> bool:
 class Settings:
     bot_token: str
     database_url: str | None
+    supabase_url: str | None
+    supabase_key: str | None
     port: int
     cache_dir: Path
     enable_ytdlp: bool
@@ -35,6 +37,8 @@ class Settings:
         return cls(
             bot_token=token,
             database_url=os.getenv("DATABASE_URL"),
+            supabase_url=os.getenv("SUPABASE_URL"),
+            supabase_key=os.getenv("SUPABASE_KEY"),
             port=int(os.getenv("PORT", "8000")),
             cache_dir=cache_dir,
             enable_ytdlp=_as_bool("ENABLE_YTDLP_DOWNLOADS", True),
