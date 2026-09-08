@@ -31,8 +31,11 @@ class MusicService:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         query: str,
-        limit: int = 10,
+        limit: int = 30,
     ) -> None:
+        """Search the cache and the audio provider, then show all found tracks in
+        paginated pages with ‹ › arrows (page size = SEARCH_PAGE_SIZE).
+        """
         message = update.effective_message
         chat = update.effective_chat
         if not message or not chat:
@@ -43,38 +46,35 @@ class MusicService:
             return
 
         cached = await self.database.search_song(query)
-        results: list[tuple[str, str]] = []
         youtube_results: list[SearchResult] = []
-        if cached:
-            results.append((f"cached:{cached.id}", f"{cached.artist} — {cached.title} (кэш)"))
-
         if self.provider:
             try:
                 youtube_results = await self.provider.search(query, limit=limit)
             except Exception:
                 logger.exception("Search failed for query=%r", query)
                 youtube_results = []
-            for index, result in enumerate(youtube_results):
-                results.append((f"result:{index}", result.label))
 
-        results = results[:limit]
-        if not results:
+        items: list[tuple[str, str]] = []
+        if cached:
+            items.append((f"cached:{cached.id}", f"☑️ {cached.artist} — {cached.title} (в каталоге)"))
+        for index, result in enumerate(youtube_results):
+            items.append((f"result:{index}", result.label))
+
+        if not items:
             await message.reply_text("По запросу ничего не найдено. Попробуйте изменить запрос.")
             return
 
+        # Keep the chosen-track lookup, keyed by the real YouTube result index.
         context.chat_data["search_results"] = {
-            str(index): result.url
-            for index, result in enumerate(
-                youtube_results[: max(0, limit - (1 if cached else 0))],
-            )
+            str(index): result.url for index, result in enumerate(youtube_results)
         }
-        from telegram import InlineKeyboardButton
+        context.chat_data["search_items"] = items
+        context.chat_data["search_page"] = 0
+        context.chat_data["search_query"] = query
 
         await message.reply_text(
             "🎵 Выберите песню:",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton(label, callback_data=callback)] for callback, label in results]
-            ),
+            reply_markup=_search_page_markup(items, 0),
         )
 
     async def send_query(
@@ -198,3 +198,36 @@ def _is_media_url(value: str) -> bool:
         or "youtu.be" in value
         or "tiktok.com" in value
     )
+
+SEARCH_PAGE_SIZE = 8
+
+
+def _search_page_markup(
+    items: list[tuple[str, str]], page: int
+) -> InlineKeyboardMarkup:
+    """Build the paginated inline keyboard for a search-result list."""
+    from telegram import InlineKeyboardButton
+
+    total_pages = max(1, (len(items) + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * SEARCH_PAGE_SIZE
+    rows = [
+        [InlineKeyboardButton(label, callback_data=callback)]
+        for callback, label in items[start : start + SEARCH_PAGE_SIZE]
+    ]
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️", callback_data="sprev"))
+    nav.append(
+        InlineKeyboardButton(f"📄 {page + 1}/{total_pages}", callback_data="noop")
+    )
+    if start + SEARCH_PAGE_SIZE < len(items):
+        nav.append(InlineKeyboardButton("▶️", callback_data="snext"))
+    if nav:
+        rows.append(nav)
+    return InlineKeyboardMarkup(rows)
+
+
+def clamp_search_page(page: int, total: int) -> int:
+    total_pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
+    return max(0, min(int(page), total_pages - 1))

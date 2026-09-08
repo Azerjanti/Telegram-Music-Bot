@@ -1,5 +1,11 @@
+import logging
+
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
+
+from music_bot.access import ensure_access, is_admin, register_user
+
+logger = logging.getLogger(__name__)
 
 
 MENU = ReplyKeyboardMarkup(
@@ -15,16 +21,44 @@ MENU = ReplyKeyboardMarkup(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_message:
-        await update.effective_message.reply_text(
-            "Добро пожаловать в музыкальный бот!\nВыбери одну из опций ниже:",
-            reply_markup=MENU,
-        )
+    message = update.effective_message
+    if not message:
+        return
+    user = update.effective_user
+    if user and not user.is_bot:
+        try:
+            record = await register_user(update, context)
+        except Exception:
+            logger.exception("Could not register user")
+            record = None
+        banned = bool(record and record.is_banned)
+        if banned:
+            await message.reply_text(
+                "⛔️ Вы заблокированы и не можете пользоваться ботом."
+            )
+            return
+        if record and record.blocked_at:
+            # User came back after unblocking the bot - clear the auto-detection.
+            try:
+                await context.application.bot_data["database"].clear_user_blocked(user.id)
+            except Exception:
+                logger.debug("Could not clear blocked marker", exc_info=True)
+
+    admin_note = ""
+    if user and await is_admin(user.id, context):
+        admin_note = "\n\n🛠 Вы администратор — доступна команда /admin."
+    await message.reply_text(
+        "Добро пожаловать в музыкальный бот!\n"
+        "Выбери одну из опций ниже:" + admin_note,
+        reply_markup=MENU,
+    )
 
 
 async def menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if not message:
+        return
+    if not await ensure_access(update, context):
         return
     choice = message.text or ""
     if choice == "Поиск песни":

@@ -15,3 +15,7 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: ENABLE_SHAZAM
+        value: "true"

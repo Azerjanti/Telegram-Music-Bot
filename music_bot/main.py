@@ -4,8 +4,10 @@ import logging
 import os
 from pathlib import Path
 
+from telegram import Update
 from telegram.ext import (
     Application,
+    ContextTypes,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
@@ -13,6 +15,7 @@ from telegram.ext import (
     filters,
 )
 
+from music_bot.admin import admin_start, admin_text
 from music_bot.config import Settings
 from music_bot.database import Database, SupabaseDatabase
 from music_bot.downloader import YouTubeProvider
@@ -68,6 +71,15 @@ async def initialize(application: Application) -> None:
     application.bot_data["settings"] = settings
     application.bot_data["enable_shazam"] = settings.enable_shazam
 
+    # Pre-register any admins from ADMIN_IDS so the panel works immediately even
+    # before those users press /start.
+    for admin_id in settings.admin_ids:
+        try:
+            await database.set_db_admin(admin_id, True)
+            await database.register_user(user_id=admin_id)
+        except Exception:
+            logger.debug("Could not pre-register admin %s", admin_id, exc_info=True)
+
     spotify_client_id = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
     spotify_client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
     if spotify_client_id and spotify_client_secret:
@@ -88,12 +100,29 @@ async def shutdown(application: Application) -> None:
         await database.close()
 
 
+async def _route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle pending admin text input (add channel / ban target / add admin),
+    otherwise fall back to the regular music search."""
+    if await admin_text(update, context):
+        return
+    await text_search(update, context)
+
+
 def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("admin", admin_start))
     application.add_handler(CommandHandler(["like", "favorites"], show_favorites))
     application.add_handler(CallbackQueryHandler(callback_query))
     application.add_handler(
-        MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.ALL, voice_search)
+        MessageHandler(
+            filters.VOICE
+            | filters.AUDIO
+            | filters.VIDEO
+            | filters.VIDEO_NOTE
+            | filters.Document.AUDIO
+            | filters.Document.VIDEO,
+            voice_search,
+        )
     )
     application.add_handler(
         MessageHandler(
@@ -104,7 +133,10 @@ def register_handlers(application: Application) -> None:
             menu_action,
         )
     )
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_search))
+    # Route any other text message: pending admin input first, then normal search.
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, _route_text)
+    )
 
 
 def create_application(bot_token: str) -> Application:

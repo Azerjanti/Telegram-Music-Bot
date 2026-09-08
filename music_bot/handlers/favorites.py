@@ -5,6 +5,7 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from music_bot.access import ensure_access
 from music_bot.services import MusicService
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = update.effective_message
     user = update.effective_user
     if not message or not user:
+        return
+    if not await ensure_access(update, context):
         return
     service: MusicService = context.application.bot_data["music_service"]
     try:

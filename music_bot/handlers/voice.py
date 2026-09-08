@@ -8,6 +8,7 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from music_bot.access import ensure_access, register_user
 from music_bot.services import MusicService
 
 logger = logging.getLogger(__name__)
@@ -15,21 +16,43 @@ logger = logging.getLogger(__name__)
 
 async def voice_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
-    if not message or not (message.voice or message.audio or message.document):
+    if not message:
         return
+    media = message.voice or message.audio or message.document or message.video or message.video_note
+    if not media:
+        return
+    if not await ensure_access(update, context):
+        return
+    try:
+        await register_user(update, context)
+    except Exception:
+        pass
     service: MusicService = context.application.bot_data["music_service"]
     if not context.application.bot_data.get("enable_shazam", True):
-        await message.reply_text("Распознавание голосом отключено в конфигурации.")
+        await message.reply_text("🎤 Распознавание голосом сейчас отключено администратором.")
         return
     try:
         from shazamio import Shazam
     except ImportError:
-        await message.reply_text("Распознавание голосом ещё не подключено. Используйте поиск текстом.")
+        logger.warning("shazamio is not installed; voice recognition unavailable")
+        await message.reply_text(
+            "🎤 Распознавание голосом пока недоступно: модуль распознавания не установлен. "
+            "Администратор должен выполнить установку зависимости (shazamio) и ffmpeg."
+        )
         return
 
-    file_ref = message.voice or message.audio or message.document
-    if message.document and not _is_audio_document(message.document):
-        await message.reply_text("Отправьте аудиофайл для распознавания.")
+    if not shutil.which("ffmpeg"):
+        await message.reply_text(
+            "🎤 Распознавание голосом недоступно: не установлен ffmpeg. "
+            "Обратитесь к администратору."
+        )
+        return
+
+    file_ref = message.voice or message.audio or message.document or message.video or message.video_note
+    if message.document and not (
+        _is_audio_document(message.document) or _is_video_document(message.document)
+    ):
+        await message.reply_text("Отправьте аудио- или видеофайл для распознавания.")
         return
 
     cache_dir = Path("/tmp/music-bot")
@@ -86,10 +109,14 @@ async def _convert_to_mp3(input_path: Path, output_path: Path) -> Path:
 def _input_suffix(message) -> str:
     if message.voice:
         return ".ogg"
-    media = message.audio or message.document
+    if message.video_note:
+        return ".mp4"
+    media = message.audio or message.document or message.video
     filename = getattr(media, "file_name", None) or ""
     suffix = Path(filename).suffix.lower()
-    return suffix if suffix else ".audio"
+    if suffix in {".mp4", ".mov", ".mkv", ".webm", ".avi", ".3gp", ".m4v"}:
+        return suffix
+    return suffix if suffix else (".mp4" if message.video else ".audio")
 
 
 def _is_audio_document(document) -> bool:
@@ -105,4 +132,19 @@ def _is_audio_document(document) -> bool:
         ".flac",
         ".opus",
         ".webm",
+    }
+
+def _is_video_document(document) -> bool:
+    mime_type = (document.mime_type or "").lower()
+    filename = (document.file_name or "").lower()
+    return mime_type.startswith("video/") or Path(filename).suffix in {
+        ".mp4",
+        ".mov",
+        ".mkv",
+        ".webm",
+        ".avi",
+        ".m4v",
+        ".3gp",
+        ".flv",
+        ".ts",
     }

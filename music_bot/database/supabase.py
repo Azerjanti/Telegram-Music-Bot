@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 
-from music_bot.database.db import Favorite, Song
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ago_iso(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+from music_bot.database.db import Favorite, RequiredChannel, Song, UserRecord
 from music_bot.search_engine import normalize, similarity
 
 
@@ -45,6 +54,23 @@ class SupabaseDatabase:
         if not response.content:
             return None
         return response.json()
+
+    async def _count(self, table: str, filters: dict[str, str]) -> int:
+        """Return the exact row count for the given PostgREST filters."""
+        if not self._client:
+            raise RuntimeError("Supabase database is not connected")
+        response = await self._client.request(
+            "GET",
+            table,
+            params={"select": "id", **filters},
+            headers={"Prefer": "count=exact", "Range": "0-0"},
+        )
+        response.raise_for_status()
+        content_range = response.headers.get("content-range", "")
+        try:
+            return int(content_range.split("/")[1])
+        except (IndexError, ValueError):
+            return 0
 
     @staticmethod
     def _row_to_song(row: dict[str, Any]) -> Song:
@@ -217,3 +243,205 @@ class SupabaseDatabase:
             "favorites",
             params={"user_id": f"eq.{user_id}", "id": f"eq.{favorite_id}"},
         )
+    # ------------------------------------------------------------------ users
+
+    @staticmethod
+    def _row_to_user(row: dict[str, Any]) -> UserRecord:
+        return UserRecord(
+            user_id=int(row["user_id"]),
+            username=row.get("username"),
+            first_name=row.get("first_name"),
+            is_admin=bool(row.get("is_admin", False)),
+            is_banned=bool(row.get("is_banned", False)),
+            banned_reason=row.get("banned_reason"),
+            started_at=row.get("started_at"),
+            last_seen_at=row.get("last_seen_at"),
+            blocked_at=row.get("blocked_at"),
+        )
+
+    async def register_user(
+        self,
+        user_id: int,
+        username: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
+    ) -> UserRecord:
+        payload: dict[str, Any] = {"user_id": user_id}
+        if username is not None:
+            payload["username"] = username
+        if first_name is not None:
+            payload["first_name"] = first_name
+        if last_name is not None:
+            payload["last_name"] = last_name
+        await self._request(
+            "POST",
+            "users",
+            params={"on_conflict": "user_id"},
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+            json=payload,
+        )
+        # Always touch last_seen_at so the "active users" counter stays fresh.
+        await self._request(
+            "PATCH",
+            "users",
+            params={"user_id": f"eq.{user_id}"},
+            headers={"Prefer": "return=minimal"},
+            json={"last_seen_at": _now_iso()},
+        )
+        return (await self.get_user(user_id)) or UserRecord(
+            user_id=user_id,
+            username=username,
+            first_name=first_name,
+            is_admin=False,
+            is_banned=False,
+            banned_reason=None,
+            started_at=None,
+            last_seen_at=None,
+            blocked_at=None,
+        )
+
+    async def get_user(self, user_id: int) -> UserRecord | None:
+        rows = await self._request(
+            "GET",
+            "users",
+            params={"select": "*", "user_id": f"eq.{user_id}", "limit": "1"},
+        )
+        return self._row_to_user(rows[0]) if rows else None
+
+    async def is_banned(self, user_id: int) -> bool:
+        record = await self.get_user(user_id)
+        return bool(record and record.is_banned)
+
+    async def set_banned(self, user_id: int, banned: bool, reason: str | None = None) -> None:
+        await self._request(
+            "POST",
+            "users",
+            params={"on_conflict": "user_id"},
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+            json={
+                "user_id": user_id,
+                "is_banned": banned,
+                "banned_reason": reason,
+            },
+        )
+
+    async def mark_user_blocked(self, user_id: int) -> None:
+        record = await self.get_user(user_id)
+        if not record or record.blocked_at:
+            return
+        await self._request(
+            "PATCH",
+            "users",
+            params={"user_id": f"eq.{user_id}"},
+            headers={"Prefer": "return=minimal"},
+            json={"blocked_at": _now_iso()},
+        )
+
+    async def clear_user_blocked(self, user_id: int) -> None:
+        await self._request(
+            "PATCH",
+            "users",
+            params={"user_id": f"eq.{user_id}"},
+            headers={"Prefer": "return=minimal"},
+            json={"blocked_at": None},
+        )
+
+    async def set_db_admin(self, user_id: int, is_admin: bool) -> None:
+        await self._request(
+            "POST",
+            "users",
+            params={"on_conflict": "user_id"},
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+            json={"user_id": user_id, "is_admin": is_admin},
+        )
+
+    async def user_stats(self, active_days: int = 7) -> dict[str, int]:
+        total = await self._count("users", {})
+        active = await self._count(
+            "users", {"last_seen_at": f"gte.{_ago_iso(int(active_days))}"}
+        )
+        blocked = await self._count(
+            "users", {"blocked_at": "not.is.null", "is_banned": "eq.false"}
+        )
+        banned = await self._count("users", {"is_banned": "eq.true"})
+        return {
+            "total": int(total),
+            "active": int(active),
+            "blocked": int(blocked),
+            "banned": int(banned),
+        }
+
+    async def list_users(self, offset: int = 0, limit: int = 20) -> list[UserRecord]:
+        rows = await self._request(
+            "GET",
+            "users",
+            params={
+                "select": "*",
+                "order": "last_seen_at.desc",
+                "limit": str(limit),
+                "offset": str(offset),
+            },
+        )
+        return [self._row_to_user(row) for row in rows or []]
+
+    async def search_users(self, value: str, limit: int = 20) -> list[UserRecord]:
+        try:
+            user_id_match = int(value)
+        except (TypeError, ValueError):
+            user_id_match = None
+        like = f"*{value}*"
+        or_clause = f"(username.ilike.{like},first_name.ilike.{like})"
+        if user_id_match is not None:
+            or_clause = (
+                f"(user_id.eq.{user_id_match},username.ilike.{like},first_name.ilike.{like})"
+            )
+        rows = await self._request(
+            "GET",
+            "users",
+            params={"select": "*", "or": or_clause, "limit": str(limit)},
+        )
+        return [self._row_to_user(row) for row in rows or []]
+
+    # ------------------------------------------------------ required channels
+
+    @staticmethod
+    def _row_to_channel(row: dict[str, Any]) -> RequiredChannel:
+        return RequiredChannel(
+            id=int(row["id"]),
+            chat_id=int(row["chat_id"]),
+            username=row.get("username"),
+            title=row.get("title"),
+        )
+
+    async def add_required_channel(
+        self, chat_id: int, username: str | None, title: str | None
+    ) -> RequiredChannel:
+        rows = await self._request(
+            "POST",
+            "required_channels",
+            params={"on_conflict": "chat_id"},
+            headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+            json={
+                "chat_id": chat_id,
+                "username": username,
+                "title": title,
+            },
+        )
+        if not rows:
+            raise RuntimeError("Supabase did not return the saved channel")
+        return self._row_to_channel(rows[0])
+
+    async def remove_required_channel(self, channel_id: int) -> None:
+        await self._request(
+            "DELETE",
+            "required_channels",
+            params={"id": f"eq.{channel_id}"},
+        )
+
+    async def list_required_channels(self) -> list[RequiredChannel]:
+        rows = await self._request(
+            "GET",
+            "required_channels",
+            params={"select": "*", "order": "id.asc"},
+        )
+        return [self._row_to_channel(row) for row in rows or []]
