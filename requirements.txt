@@ -1,13 +1,30 @@
+# Python 3.12+ ile uyumlu bağımlılıklar (Ubuntu VPS, venv + pip ile doğrulandı)
+
 python-telegram-bot==20.7
-supabase==2.3.0
-yt-dlp==2024.1.0
-rapidfuzz==3.6.1
-spotipy==2.23.0
-shazamio==0.4.0
+
+# supabase 2.3.0 "httpx>=0.24,<0.25" istediği için PTB 20.7 (httpx~=0.25.2) ile
+# çakışıyordu. 2.4.1–2.8.x aralığı "httpx>=0.24,<0.28" kabul ediyor.
+supabase>=2.4.1,<2.9
+
+# 2024.1.0 PyPI'dan kaldırıldı; YouTube indirme için güncel sürüm şart.
+yt-dlp>=2026.8.19
+
+rapidfuzz>=3.6.1,<4
+spotipy>=2.23.0,<3
+
+# shazamio 0.4.0 "aiofiles<23" ve pydantic 1.x istiyordu (Python 3.12'de sorunlu).
+# 0.7+ sürümleri Python 3.10+ için yayınlanıyor ve cp312 wheel'leri mevcut.
+shazamio>=0.7.0,<0.9
+
 ffmpeg-python==0.2.0
-aiohttp==3.9.1
-aiofiles==23.2.1
-python-dotenv==1.0.0
+aiohttp>=3.9.5,<4
+aiofiles>=23.2.1,<24
+python-dotenv>=1.0.1,<2
 asyncpg>=0.30,<1
-httpx>=0.28,<1
-audioop-lts>=0.2
+
+# python-telegram-bot 20.7 "httpx~=0.25.2" gerektiriyor; daha yenisi ResolutionImpossible verir.
+httpx~=0.25.2
+
+# audioop, Python 3.12'de hâlâ standart kütüphanede; 3.13'te kaldırıldı.
+# Bu yüzden paket yalnızca 3.13+ üzerinde kurulur (shazamio -> pydub bağımlılığı için).
+audioop-lts>=0.2; python_version >= "3.13"
