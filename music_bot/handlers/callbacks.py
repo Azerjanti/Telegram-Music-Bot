@@ -5,9 +5,12 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from music_bot.admin import dispatch_admin_callback
+from music_bot.access import missing_channels
 from music_bot.handlers.favorites import favorites_markup
 from music_bot.handlers.search import send_local_top
 from music_bot.services import MusicService
+from music_bot.services.music import SEARCH_PAGE_SIZE, _search_page_markup, clamp_search_page
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,66 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     service: MusicService = context.application.bot_data["music_service"]
     data = query.data or ""
     user = query.from_user
+
+    # ---- Admin panel -------------------------------------------------------
+    if await dispatch_admin_callback(update, context):
+        return
+
+    # ---- Nop (page indicator etc.) ----------------------------------------
+    if data == "noop":
+        await query.answer()
+        return
+
+    # ---- Mandatory channel re-check ---------------------------------------
+    if data == "mrecheck":
+        if not user:
+            await query.answer()
+            return
+        missing = await missing_channels(context, user.id)
+        if not missing:
+            await query.answer("✅ Подписка подтверждена!")
+            if query.message:
+                try:
+                    await query.message.edit_text(
+                        "✅ Подписка подтверждена! Теперь вы можете пользоваться ботом. "
+                        "Выберите пункт меню ещё раз."
+                    )
+                except Exception:
+                    logger.debug("Could not edit recheck message", exc_info=True)
+        else:
+            await query.answer(
+                f"Подпишитесь ещё на {len(missing)} канал(а/ов) ниже.",
+                show_alert=True,
+            )
+        return
+
+    # ---- Search results pagination ----------------------------------------
+    if data in {"snext", "sprev"}:
+        items = context.chat_data.get("search_items") or []
+        page = int(context.chat_data.get("search_page", 0))
+        total = len(items)
+        if total == 0:
+            await query.answer("Список пуст")
+            return
+        total_pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
+        if data == "snext":
+            page += 1
+        else:
+            page -= 1
+        page = clamp_search_page(page, total)
+        context.chat_data["search_page"] = page
+        if query.message:
+            try:
+                await query.message.edit_reply_markup(
+                    reply_markup=_search_page_markup(items, page)
+                )
+            except Exception:
+                logger.debug("Could not paginate", exc_info=True)
+            await query.answer(f"Страница {page + 1} из {total_pages}")
+        else:
+            await query.answer()
+        return
+
     if data.startswith("favorite:add:") or data.startswith("favorite:remove:"):
         song_id = int(data.rsplit(":", 1)[1])
         song = await service.database.get_song(song_id)
@@ -68,9 +131,7 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 title=favorite.title,
                 performer=favorite.artist,
                 reply_markup=(
-                    service.track_actions(song, is_favorite=True)
-                    if song
-                    else None
+                    service.track_actions(song, is_favorite=True) if song else None
                 ),
             )
         if song:

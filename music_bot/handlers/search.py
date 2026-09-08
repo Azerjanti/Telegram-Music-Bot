@@ -1,6 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from music_bot.access import ensure_access, register_user
 from music_bot.services import MusicService
 from music_bot.top_charts.hardcoded import TOP_100_FALLBACK
 from music_bot.top_charts import SpotifyProvider
@@ -10,6 +11,12 @@ async def text_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.effective_message
     if not message or not message.text:
         return
+    if not await ensure_access(update, context):
+        return
+    try:
+        await register_user(update, context)
+    except Exception:
+        pass
     mode = context.user_data.pop("mode", "song")
     service: MusicService = context.application.bot_data["music_service"]
     if mode == "artist":
@@ -18,7 +25,7 @@ async def text_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await message.reply_text("В локальном каталоге пока нет песен этого исполнителя.")
             return
         lines = [f"{index}. {song.title}" for index, song in enumerate(songs[:50], start=1)]
-        await message.reply_text(f"Песни исполнителя:\n\n" + "\n".join(lines))
+        await message.reply_text("Песни исполнителя:\n\n" + "\n".join(lines))
         return
     if mode == "local_top":
         await send_local_top(update, context)
