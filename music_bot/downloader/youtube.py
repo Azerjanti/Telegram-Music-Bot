@@ -458,10 +458,10 @@ class YouTubeProvider:
             results.append(SearchResult(metadata.title, metadata.artist, url))
         return results[:limit]
 
-    async def download(self, query: str) -> DownloadedTrack:
-        return await asyncio.to_thread(self._download_sync, query)
+    async def download(self, query: str, progress_callback=None) -> DownloadedTrack:
+        return await asyncio.to_thread(self._download_sync, query, progress_callback)
 
-    def _download_sync(self, query: str) -> DownloadedTrack:
+    def _download_sync(self, query: str, progress_callback=None) -> DownloadedTrack:
         try:
             import yt_dlp
         except ImportError as exc:
@@ -485,6 +485,32 @@ class YouTubeProvider:
         preferred_codec = _env_str("YTDLP_PREFERRED_CODEC", "mp3") or "mp3"
         preferred_quality = _env_str("YTDLP_PREFERRED_QUALITY", "192") or "192"
 
+        # Build progress hook for Telegram editing (task #6)
+        progress_hooks = []
+        if progress_callback:
+
+            def _yt_progress(d):
+                try:
+                    if d.get("status") == "downloading":
+                        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                        downloaded = d.get("downloaded_bytes") or 0
+                        if total:
+                            percent = int(downloaded * 100 / total)
+                            progress_callback(percent)
+                        else:
+                            # fallback when total unknown - use fragment counts
+                            frag_index = d.get("fragment_index")
+                            frag_count = d.get("fragment_count")
+                            if frag_index and frag_count:
+                                percent = int(frag_index * 100 / frag_count)
+                                progress_callback(percent)
+                    elif d.get("status") == "finished":
+                        progress_callback(100)
+                except Exception:
+                    logger.debug("Progress hook failed", exc_info=True)
+
+            progress_hooks.append(_yt_progress)
+
         common_opts = {
             **base_opts,
             "format": format_str,
@@ -498,6 +524,8 @@ class YouTubeProvider:
                 }
             ],
         }
+        if progress_hooks:
+            common_opts["progress_hooks"] = progress_hooks
 
         client_sets = _get_client_sets_to_try()
         logger.info("Starting download for query=%r with %d client sets to try", query, len(client_sets))

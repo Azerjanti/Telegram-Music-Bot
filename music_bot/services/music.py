@@ -93,10 +93,17 @@ class MusicService:
         context.chat_data["search_page"] = 0
         context.chat_data["search_query"] = query
 
-        await message.reply_text(
+        sent_list = await message.reply_text(
             "🎵 Выберите песню:",
             reply_markup=_search_page_markup(items, 0),
         )
+        # Remember where the list lives so the ⏪ on a track can bring it back
+        # without posting a new message (task #2 navigation).
+        try:
+            context.chat_data["search_list_chat_id"] = sent_list.chat_id if hasattr(sent_list, "chat_id") else chat.id
+            context.chat_data["search_list_message_id"] = getattr(sent_list, "message_id", None)
+        except Exception:
+            pass
 
     async def send_query(
         self,
@@ -110,10 +117,53 @@ class MusicService:
         if not message or not chat:
             return None
 
-        loading_message = await message.reply_text("⏳ Скачиваю трек...")
+        loading_message = await message.reply_text("⏳ Скачиваю трек… 0%")
+        # Helpers to update the single loading message with 10%-step progress
+        # without spamming (task #6). The download runs in a thread, so we
+        # schedule edits via the running loop.
+        loop = asyncio.get_running_loop()
+        last_percent = {"value": 0}
+
+        async def _safe_edit_loading(msg, text: str) -> None:
+            try:
+                await msg.edit_text(text)
+            except Exception:
+                logger.debug("Could not edit loading progress", exc_info=True)
+
+        def _edit_progress(text: str) -> None:
+            try:
+                # If we're on the main event loop, schedule directly; otherwise
+                # use thread-safe call (download runs in a thread via to_thread).
+                try:
+                    running = asyncio.get_running_loop()
+                except RuntimeError:
+                    running = None
+                if running is loop:
+                    # Same loop - don't block, just create a task
+                    loop.create_task(_safe_edit_loading(loading_message, text))
+                else:
+                    asyncio.run_coroutine_threadsafe(
+                        _safe_edit_loading(loading_message, text), loop
+                    )
+            except Exception:
+                logger.debug("Could not schedule progress edit", exc_info=True)
+
+        def _progress_hook(percent: int) -> None:
+            # clamp and only emit every 10%
+            p = max(0, min(100, int(percent)))
+            stepped = (p // 10) * 10
+            if stepped != last_percent["value"] and stepped % 10 == 0:
+                last_percent["value"] = stepped
+                _edit_progress(f"⏳ Скачиваю трек… {stepped}%")
+
         cached = await self.database.search_song(query)
         try:
             if cached:
+                # cached is instant - show 100% briefly then send
+                try:
+                    await loading_message.edit_text("⏳ Скачиваю трек… 100%")
+                except Exception:
+                    pass
                 await self._send_cached(update, cached)
                 await self.database.increment_play_count(cached.id)
                 return cached
@@ -128,7 +178,14 @@ class MusicService:
                 sent = None
                 token: str | None = None
                 try:
-                    downloaded = await self.provider.download(source_url or query)
+                    # Provider may be a fake in tests that doesn't accept progress_callback
+                    try:
+                        downloaded = await self.provider.download(source_url or query, progress_callback=_progress_hook)  # type: ignore[call-arg]
+                    except TypeError:
+                        # fallback for providers without progress_callback param
+                        downloaded = await self.provider.download(source_url or query)
+                        # simulate at least 100% for test providers
+                        _progress_hook(100)
                     if downloaded.path.stat().st_size > self.max_file_mb * 1024 * 1024:
                         raise RuntimeError("Файл превышает лимит Telegram")
                     # The file_id is only known once Telegram accepts the upload,
@@ -195,7 +252,7 @@ class MusicService:
 
     @staticmethod
     def track_actions(song: Song, is_favorite: bool = False) -> InlineKeyboardMarkup:
-        """❤️ / 💔 + ❌ row for a track that is already in the catalogue."""
+        """❤️ / 💔 + ⏪ row for a track that is already in the catalogue."""
         return track_markup(song=song, is_favorite=is_favorite)
 
     async def _favorite_state(self, update: Update, song: Song) -> bool:
@@ -210,7 +267,7 @@ class MusicService:
             return False
 
     async def _send_audio(self, update: Update, song: Song) -> None:
-        """Send a catalogue track. The ❤️/❌ row is attached in the same call, so
+        """Send a catalogue track. The ❤️/⏪ row is attached in the same call, so
         the buttons exist from the very first moment the audio is visible."""
         message = update.effective_message
         if not message:
@@ -249,8 +306,15 @@ SEARCH_PAGE_SIZE = 8
 def _search_page_markup(
     items: list[tuple[str, str]], page: int
 ) -> InlineKeyboardMarkup:
-    """Build the paginated inline keyboard for a search-result list."""
+    """Build the paginated inline keyboard for a search-result list.
+
+    The last row is always ⏪ Назад which returns to the main prompt
+    \"Напишите название песни или исполнителя.\" without posting a new
+    message (edits the current one) - task #2.
+    """
     from telegram import InlineKeyboardButton
+
+    from music_bot.track_buttons import SEARCH_BACK, SEARCH_BACK_LABEL
 
     total_pages = max(1, (len(items) + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
@@ -269,6 +333,8 @@ def _search_page_markup(
         nav.append(InlineKeyboardButton("▶️", callback_data="snext"))
     if nav:
         rows.append(nav)
+    # Back button - always present so the user can return to the main screen
+    rows.append([InlineKeyboardButton(SEARCH_BACK_LABEL, callback_data=SEARCH_BACK)])
     return InlineKeyboardMarkup(rows)
 
 

@@ -45,20 +45,42 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer()
         return
 
-    # ❌ under a track → hide the buttons and go back to song search.
+    # ⏪ under a track → hide the buttons and go back to song search / search list.
+    # First press on an audio returns to the search result list (which is still
+    # visible underneath), second press on the list returns to the main prompt.
+    # Both edit the *existing* message (task #2, #6).
     if data == TRACK_CLOSE:
         context.user_data["mode"] = "song"
-        await query.answer("❌ Готово. Напишите название песни для нового поиска.")
-        # The buttons are removed by editing the existing message - no new one.
+        await query.answer("⏪ Назад")
+        # If a search list is still remembered, refresh it so the user lands
+        # back on the list without a new message.
+        items = context.chat_data.get("search_items")
+        if items and query.message and getattr(query.message, "audio", None):
+            try:
+                chat_id = context.chat_data.get("search_list_chat_id")
+                msg_id = context.chat_data.get("search_list_message_id")
+                if chat_id and msg_id:
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=msg_id,
+                            text="🎵 Выберите песню:",
+                            reply_markup=_search_page_markup(items, int(context.chat_data.get("search_page", 0))),
+                        )
+                    except Exception:
+                        logger.debug("Could not refresh search list on track back", exc_info=True)
+            except Exception:
+                pass
         await replace_markup(query.message, None)
         return
 
-    # Legacy ❌ callback still present on older messages.
+    # ⏪ on the search result list itself → main prompt.
+    # Also keeps compatibility with old ❌ messages (search:back).
     if data == "search:back":
         context.user_data["mode"] = "song"
         await query.answer()
         if query.message:
-            if query.message.audio:
+            if getattr(query.message, "audio", None):
                 await replace_markup(query.message, None)
             else:
                 try:
@@ -66,7 +88,7 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         "Напишите название песни или исполнителя."
                     )
                 except Exception:
-                    logger.debug("Could not prompt search after ❌", exc_info=True)
+                    logger.debug("Could not prompt search after ⏪", exc_info=True)
         return
 
     # ❤️ / 💔 for a track that was just uploaded and may not be catalogued yet.

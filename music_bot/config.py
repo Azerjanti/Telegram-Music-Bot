@@ -98,9 +98,9 @@ class Settings:
     max_concurrent_downloads: int
     download_retries: int
     max_telegram_file_mb: int
-    # Where the SQLite fallback catalogue lives. /tmp is wiped on every
-    # Replit/Render restart, which is why the local top can look empty.
-    music_db_path: Path = Path("/tmp/music-bot/music.sqlite3")
+    # Where the SQLite catalogue lives. For VPS persistence use a non-/tmp path
+    # (e.g. data/music.sqlite3). /tmp is wiped on every Replit/Render restart.
+    music_db_path: Path = Path("data/music.sqlite3")
     # Telegram numeric IDs of the primary bot owners (the people who can open the
     # admin panel and transfer admin rights to others).
     admin_ids: frozenset[int] = frozenset()
@@ -148,7 +148,7 @@ class Settings:
             download_retries=max(1, int(os.getenv("DOWNLOAD_RETRIES", "3"))),
             max_telegram_file_mb=max(1, int(os.getenv("MAX_TELEGRAM_FILE_MB", "50"))),
             music_db_path=Path(
-                os.getenv("MUSIC_DB_PATH", "/tmp/music-bot/music.sqlite3").strip().strip("\"'`")
+                os.getenv("MUSIC_DB_PATH", "data/music.sqlite3").strip().strip("\"'`")
             ),
             admin_ids=frozenset(admin_ids),
             admin_usernames=frozenset(admin_usernames),
