@@ -46,31 +46,37 @@ async def initialize(application: Application) -> None:
         sorted(settings.admin_ids),
         f", usernames: {sorted(settings.admin_usernames)}" if settings.admin_usernames else "",
     )
+    # Per task requirements: keep catalogue and favorites on the VPS itself
+    # (local SQLite / Postgres), never on Supabase. Supabase is unreliable
+    # and caused \"Не удалось сохранить трек в избранное.\" and the catalogue
+    # never hitting the cache.
+    # We therefore ignore SUPABASE_URL / SUPABASE_KEY even when set.
+    if settings.supabase_url or settings.supabase_key:
+        logger.info("Supabase env vars are present but ignored - using local VPS storage per requirements")
     database = None
-    if settings.supabase_url and settings.supabase_key:
-        try:
-            database = SupabaseDatabase(settings.supabase_url, settings.supabase_key)
-            await database.connect()
-            logger.info("Using Supabase songs cache")
-        except Exception:
-            logger.exception("Supabase cache unavailable; using local database fallback")
-            if database:
-                await database.close()
-            database = None
-
-    if database is None:
-        # SQLite fallback. Point MUSIC_DB_PATH at a directory that survives
-        # restarts, otherwise the catalogue (and the local top) resets to empty.
-        settings.music_db_path.parent.mkdir(parents=True, exist_ok=True)
-        database = Database(settings.database_url, settings.music_db_path)
+    # Only use Postgres when DATABASE_URL looks like postgres; otherwise SQLite.
+    db_url = settings.database_url if settings.database_url and settings.database_url.startswith(("postgres://", "postgresql://")) else None
+    settings.music_db_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        database = Database(db_url, settings.music_db_path)
         await database.connect()
-        logger.info(
-            "Using the local SQLite catalogue at %s%s",
-            settings.music_db_path,
-            " (WARNING: /tmp is wiped on restart - set MUSIC_DB_PATH to keep the local top)"
-            if str(settings.music_db_path).startswith("/tmp")
-            else "",
-        )
+    except Exception as exc:
+        logger.exception("Database connection failed (%s), falling back to local SQLite", exc)
+        if database:
+            try:
+                await database.close()
+            except Exception:
+                pass
+        # force SQLite fallback
+        database = Database(None, settings.music_db_path)
+        await database.connect()
+    logger.info(
+        "Using the local VPS catalogue at %s%s",
+        settings.music_db_path,
+        " (WARNING: /tmp is wiped on restart - set MUSIC_DB_PATH to keep the local top)"
+        if str(settings.music_db_path).startswith("/tmp")
+        else "",
+    )
 
     provider = (
         YouTubeProvider(settings.cache_dir, settings.download_retries)

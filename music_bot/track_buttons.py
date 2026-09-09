@@ -33,14 +33,18 @@ FAVORITE_REMOVE = "favorite:remove:{}"
 # Token based callbacks, used until the uploaded track has a catalogue id.
 PENDING_ADD = "favnew:a:{}"
 PENDING_REMOVE = "favnew:r:{}"
-# "❌" under a track: hide the buttons and go back to search mode.
+# "⏪" under a track: hide the buttons and go back to search mode / results.
+# The callback value stays "track:close" for backwards compatibility, but the
+# visible label is now ⏪ (task requirement: replace ❌ with back arrow).
 TRACK_CLOSE = "track:close"
 # Legacy alias still accepted on old messages.
 SEARCH_BACK = "search:back"
 
 LIKE_LABEL = "❤️"
 UNLIKE_LABEL = "💔"
-CLOSE_LABEL = "❌"
+CLOSE_LABEL = "⏪"
+# Back label for the search-results list itself
+SEARCH_BACK_LABEL = "⏪ Назад"
 
 
 def build_callback_data(template: str, *parts: Any) -> str:
@@ -111,10 +115,11 @@ def track_markup(
     is_favorite: bool = False,
     token: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """The ❤️ / ❌ row that sits under every audio message.
+    """The ❤️ / ⏪ row that sits under every audio message.
 
     ``song`` (a catalogue row) is preferred because its callbacks survive a bot
     restart; ``token`` is the fallback for a track that has just been uploaded.
+    The second button is ⏪ (back) which replaces the old ❌ per task #2.
     """
     if song is not None and getattr(song, "id", 0):
         like_data = build_callback_data(

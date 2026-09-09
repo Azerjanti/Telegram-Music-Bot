@@ -77,10 +77,11 @@ def _service(db, provider=None) -> MusicService:
 
 
 def _assert_buttons(message: SentMessage, when: str) -> None:
-    """A track row always has a heart (❤️ or 💔 when already liked) plus ❌."""
+    """A track row always has a heart (❤️ or 💔 when already liked) plus ⏪ (back)."""
     labels = message.initial_button_labels
     assert "❤️" in labels or "💔" in labels, f"no heart button {when}: {labels}"
-    assert "❌" in labels, f"no ❌ button {when}: {labels}"
+    # Task #2 replaces ❌ with ⏪ - accept either for backward compatibility
+    assert "❌" in labels or "⏪" in labels, f"no back button (⏪/❌) {when}: {labels}"
     for data in message.initial_callback_data:
         assert len(data.encode()) <= MAX_CALLBACK_DATA_BYTES, f"{data!r} exceeds 64 bytes"
 
@@ -139,7 +140,7 @@ async def test_heart_on_uncatalogued_track_still_saves_favorite(broken_database,
     assert query.answers and "избранное" in query.answers[0]["text"].lower()
     assert "💔" in audio.button_labels, audio.button_labels
     # Edited in place - no extra message was posted.
-    assert not audio.replies, "❌/❤️ must not post a new message"
+    assert not audio.replies, "⏪/❌/❤️ must not post a new message"
 
 
 @pytest.mark.asyncio
@@ -192,8 +193,8 @@ async def test_cross_button_clears_keyboard_without_new_message(database):
     query = FakeCallbackQuery("track:close", audio, USER, context.bot)
     await callback_query(FakeUpdate(callback_query=query, user=USER), context)
 
-    assert audio.reply_markup is None, "the ❌ button must remove the row"
-    assert len(context.bot.sent_messages) == before, "❌ must not send a new message"
+    assert audio.reply_markup is None, "the ⏪/❌ button must remove the row"
+    assert len(context.bot.sent_messages) == before, "⏪/❌ must not send a new message"
     assert context.user_data["mode"] == "song"
     assert query.answers, "the user must get feedback"
 

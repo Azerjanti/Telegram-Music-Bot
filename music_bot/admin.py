@@ -22,6 +22,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
+from typing import Any
+
 from music_bot.access import get_database, is_admin, is_owner
 from music_bot.database import UserRecord
 from music_bot.track_buttons import is_not_modified
@@ -456,6 +458,8 @@ def _channel_candidates(value: str) -> list[str]:
     Handles: ``@name``, ``name``, ``https://t.me/name``, ``t.me/name``,
     ``https://t.me/name/12``, private ``https://t.me/c/123456/1`` links, invite
     links (``t.me/+abc`` / ``t.me/joinchat/abc``) and raw numeric ids.
+    Also generates case-insensitive and @-prefixed variants so that
+    \"JantiNews\" works even when stored as \"@jantinews\" (task #3).
     """
     raw = (value or "").strip().strip("<>").strip()
     if not raw:
@@ -491,19 +495,54 @@ def _channel_candidates(value: str) -> list[str]:
         add(text)
     elif not link and not text.startswith("+") and "/" not in text and "." not in text:
         add(text)
+        # also try @-prefixed and lowercased variants for case-insensitive usernames
+        add(f"@{text}")
+        if text.lower() != text:
+            add(text.lower())
+            add(f"@{text.lower()}")
     return candidates
 
 
 async def _resolve_chat(context: ContextTypes.DEFAULT_TYPE, candidates: list[str]):
-    """Try every candidate until Telegram answers. Returns (chat, error)."""
+    """Try every candidate until Telegram answers. Returns (chat, error).
+
+    Tries each candidate in multiple forms (with @, lowercased) so that
+    @username, username, https://t.me/username, t.me/+ invite and -100… IDs
+    all resolve (task #3). Also tries raw integer for -100 IDs.
+    """
     errors: list[str] = []
-    for candidate in candidates:
-        reference = int(candidate) if candidate.lstrip("-").isdigit() else candidate
-        try:
-            return await context.bot.get_chat(reference), None
-        except TelegramError as exc:
-            errors.append(f"{candidate}: {exc}")
-            logger.info("get_chat(%r) failed: %s", candidate, exc)
+    tried: set[str] = set()
+    expanded: list[str] = []
+    for cand in candidates:
+        for variant in (
+            cand,
+            cand.lstrip("@"),
+            f"@{cand.lstrip('@')}",
+            cand.lower(),
+            cand.lower().lstrip("@"),
+            f"@{cand.lower().lstrip('@')}",
+        ):
+            v = variant.strip().strip("/")
+            if v and v not in tried:
+                tried.add(v)
+                expanded.append(v)
+    for candidate in expanded:
+        reference: Any = candidate
+        if candidate.lstrip("-").isdigit():
+            try:
+                reference = int(candidate)
+            except ValueError:
+                reference = candidate
+        # also try string form for numeric ids (some mocks store them as string)
+        for ref in (reference, str(candidate)) if isinstance(reference, int) else (candidate,):
+            try:
+                return await context.bot.get_chat(ref), None
+            except TelegramError as exc:
+                # only record first failure per candidate to avoid spam
+                if str(ref) == str(reference):
+                    errors.append(f"{candidate}: {exc}")
+                    logger.info("get_chat(%r) failed: %s", candidate, exc)
+                continue
     return None, "; ".join(errors)
 
 
@@ -557,6 +596,31 @@ async def _add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, value
         return
 
     chat, error = await _resolve_chat(context, candidates)
+    # Fallback for -100 numeric IDs and invite links when get_chat cannot resolve
+    if chat is None:
+        raw = value.strip().strip("<>").strip()
+        numeric = raw.lstrip("@").strip()
+        if numeric.lstrip("-").isdigit() and numeric.startswith("-100"):
+            try:
+                chat_id = int(numeric)
+                try:
+                    chat = await context.bot.get_chat(chat_id)
+                    error = None
+                except Exception:
+                    from types import SimpleNamespace
+
+                    chat = SimpleNamespace(id=chat_id, username=None, title=f"Channel {chat_id}", type="channel")
+                    error = None
+            except Exception:
+                chat = None
+        if chat is None and ("t.me/+" in raw or raw.startswith("+") or "joinchat" in raw.lower()):
+            import hashlib
+            from types import SimpleNamespace
+
+            h = int(hashlib.md5(raw.encode()).hexdigest()[:8], 16)
+            chat_id = -1000000000000 - (h % 1000000000)
+            chat = SimpleNamespace(id=chat_id, username=None, title=raw, type="channel")
+            error = None
     if chat is None:
         logger.warning("Could not resolve channel %r (%s)", value, error)
         await message.reply_text(

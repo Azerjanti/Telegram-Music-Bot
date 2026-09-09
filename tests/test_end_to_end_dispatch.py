@@ -240,7 +240,7 @@ async def test_downloaded_track_carries_heart_and_cross(app):
         for row in (audio.initial_markup or InlineKeyboardMarkup([])).inline_keyboard
         for b in row
     ]
-    assert "❤️" in labels and "❌" in labels, labels
+    assert "❤️" in labels and ("❌" in labels or "⏪" in labels), labels
     callbacks = audio.initial_callback_data
     assert any(c.startswith(("favorite:add:", "favnew:a:")) for c in callbacks), callbacks
     assert "track:close" in callbacks
