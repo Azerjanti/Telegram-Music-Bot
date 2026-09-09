@@ -8,6 +8,9 @@ supabase>=2.4.1,<2.9
 
 # 2024.1.0 PyPI'dan kaldırıldı; YouTube indirme için güncel sürüm şart.
 yt-dlp>=2026.8.19
+# Impersonation (curl_cffi) helps bypass YouTube bot-wall without cookies.
+# yt-dlp will auto-use it if installed; highly recommended for VPS/datacenter IPs.
+curl_cffi>=0.8.0
 
 rapidfuzz>=3.6.1,<4
 spotipy>=2.23.0,<3
