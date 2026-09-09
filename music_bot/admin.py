@@ -15,13 +15,16 @@ the next text message is routed here by ``admin_text``.
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import BadRequest, Forbidden
+from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
 from music_bot.access import get_database, is_admin, is_owner
 from music_bot.database import UserRecord
+from music_bot.track_buttons import is_not_modified
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,71 @@ USER_PAGE_SIZE = 8
 # ----------------------------------------------------------------------------
 # UI helpers
 # ----------------------------------------------------------------------------
+
+async def _render_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    markup: InlineKeyboardMarkup,
+    parse_mode: str | None = "HTML",
+) -> None:
+    """Update the admin panel **in place**.
+
+    Every tap must reuse the existing message: Telegram refuses an edit whose
+    content did not change (``BadRequest: message is not modified``), and that
+    used to bubble up as an unhandled error, which made the panel look dead.
+    """
+    query = update.callback_query
+    # A callback always knows its own message. A text-input flow (the admin
+    # typed a channel/ID) does not: the panel belongs to the message we
+    # remembered, and the typed message must be left alone.
+    message = query.message if query else None
+    if message is not None:
+        _remember_panel(context, message)
+        try:
+            await message.edit_text(text, reply_markup=markup, parse_mode=parse_mode)
+            return
+        except BadRequest as exc:
+            if is_not_modified(exc):
+                return
+            logger.debug("Could not edit the admin panel: %s", exc)
+        except (Forbidden, TelegramError) as exc:
+            logger.debug("Could not edit the admin panel: %s", exc)
+
+    chat_id = context.user_data.get("admin_panel_chat_id")
+    message_id = context.user_data.get("admin_panel_message_id")
+    if chat_id and message_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode=parse_mode,
+            )
+            return
+        except BadRequest as exc:
+            if is_not_modified(exc):
+                return
+            logger.debug("Could not edit the remembered panel: %s", exc)
+        except (Forbidden, TelegramError) as exc:
+            logger.debug("Could not edit the remembered panel: %s", exc)
+
+    if message is not None:
+        try:
+            await message.reply_text(text, reply_markup=markup, parse_mode=parse_mode)
+        except (Forbidden, TelegramError):
+            pass
+
+
+def _remember_panel(context: ContextTypes.DEFAULT_TYPE, message) -> None:
+    """Store where the panel lives so text input flows can redraw it."""
+    chat_id = getattr(message, "chat_id", None)
+    message_id = getattr(message, "message_id", None)
+    if chat_id and message_id:
+        context.user_data["admin_panel_chat_id"] = chat_id
+        context.user_data["admin_panel_message_id"] = message_id
+
 
 def _name(record: UserRecord | None, fallback: str = "—") -> str:
     if not record:
@@ -92,26 +160,57 @@ async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.effective_message
     if not user or not message:
         return
-    if not await is_admin(user.id, context):
+    if not await is_admin(user.id, context, username=user.username):
+        # Show the numeric ID so the owner can put it into ADMIN_ID.
         try:
-            await message.reply_text("⛔️ У вас нет доступа к панели администратора.")
-        except Forbidden:
+            await message.reply_text(
+                "⛔️ У вас нет доступа к панели администратора.\n\n"
+                f"Ваш Telegram ID: <code>{user.id}</code>\n"
+                "Владелец бота может добавить его в <code>ADMIN_ID</code> "
+                "(или в <code>ADMIN_IDS</code> через запятую) и перезапустить бота.",
+                parse_mode="HTML",
+            )
+        except (Forbidden, TelegramError):
             pass
         return
-    await _open_menu(message, context)
+    await _open_menu(update, context)
 
 
-async def _open_menu(message, context: ContextTypes.DEFAULT_TYPE, edit: bool = False) -> None:
+async def show_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/id - print the numeric Telegram ID of whoever asks."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    try:
+        await message.reply_text(
+            f"👤 Ваш Telegram ID: <code>{user.id}</code>"
+            + (f"\n🔖 Username: @{user.username}" if user.username else "")
+            + "\n\nЭтот ID нужен для <code>ADMIN_ID</code>.",
+            parse_mode="HTML",
+        )
+    except (Forbidden, TelegramError):
+        pass
+
+
+async def _open_menu(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False
+) -> None:
     context.user_data.pop("admin_wait", None)
     text = "🛠 Панель администратора\nВыберите действие:"
     markup = _menu_keyboard()
     if edit:
-        try:
-            await message.edit_text(text, reply_markup=markup)
-            return
-        except BadRequest:
-            pass
-    await message.reply_text(text, reply_markup=markup)
+        await _render_panel(update, context, text, markup, parse_mode=None)
+        return
+    message = update.effective_message
+    if message is None:
+        return
+    try:
+        sent = await message.reply_text(text, reply_markup=markup)
+        if sent is not None:
+            _remember_panel(context, sent)
+    except (Forbidden, TelegramError):
+        pass
 
 
 async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -123,7 +222,7 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
     message = update.effective_message
     if not user or not message or not message.text:
         return False
-    if not await is_admin(user.id, context):
+    if not await is_admin(user.id, context, username=user.username):
         return False
     wait = context.user_data.get("admin_wait")
     if not wait:
@@ -150,26 +249,124 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
 # Statistics
 # ----------------------------------------------------------------------------
 
+def _parse_timestamp(value) -> datetime | None:
+    """Parse whatever the storage backend hands back for a timestamp column."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00").replace(" ", "T", 1)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def _fallback_stats(db, active_days: int = 7) -> dict[str, int] | None:
+    """Derive the same counters from the user list.
+
+    Used when the aggregate query of the backend fails (for example because an
+    old table is missing a column), so the panel still shows real numbers
+    instead of an error.
+    """
+    try:
+        users = await db.list_users(offset=0, limit=1000)
+    except Exception:
+        logger.exception("Fallback stats also failed")
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(days=active_days)
+    stats = {"total": len(users), "active": 0, "blocked": 0, "banned": 0}
+    for record in users:
+        seen = _parse_timestamp(record.last_seen_at)
+        if seen and seen >= cutoff:
+            stats["active"] += 1
+        if record.blocked_at and not record.is_banned:
+            stats["blocked"] += 1
+        if record.is_banned:
+            stats["banned"] += 1
+    return stats
+
+
+async def _extra_stats(db) -> dict[str, int]:
+    """Catalogue counters; every one of them is optional."""
+    extra: dict[str, int] = {}
+    try:
+        extra["songs"] = len(await db.top_songs(limit=1000))
+    except Exception:
+        logger.debug("Could not count songs", exc_info=True)
+    try:
+        extra["channels"] = len(await db.list_required_channels())
+    except Exception:
+        logger.debug("Could not count required channels", exc_info=True)
+    return extra
+
+
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    if not query:
-        return
-    await query.answer()
+    if query:
+        try:
+            await query.answer()
+        except TelegramError:
+            pass
     db = get_database(context)
+
+    stats: dict[str, int] | None = None
     try:
         stats = await db.user_stats()
     except Exception:
         logger.exception("Could not load stats")
-        await query.message.edit_text("Не удалось получить статистику.", reply_markup=InlineKeyboardMarkup(_back()))
+    if stats is None:
+        stats = await _fallback_stats(db)
+    if stats is None:
+        await _render_panel(
+            update,
+            context,
+            "📊 Статистика бота\n\n"
+            "⚠️ Не удалось получить статистику: хранилище недоступно.\n"
+            "Проверьте подключение к базе данных и попробуйте ещё раз.",
+            InlineKeyboardMarkup(_back()),
+        )
         return
-    text = (
-        "📊 Статистика бота\n\n"
-        f"👤 Всего начали бот: <b>{stats['total']}</b>\n"
-        f"🟢 Активны за 7 дней: <b>{stats['active']}</b>\n"
-        f"🚫 Заблокировали бота: <b>{stats['blocked']}</b>\n"
-        f"🔒 Заблокированы вами: <b>{stats['banned']}</b>"
-    )
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(_back()))
+
+    extra = await _extra_stats(db)
+    lines = [
+        "📊 Статистика бота\n",
+        f"👤 Всего начали бот: <b>{stats['total']}</b>",
+        f"🟢 Активны за 7 дней: <b>{stats['active']}</b>",
+        f"🚫 Заблокировали бота: <b>{stats['blocked']}</b>",
+        f"🔒 Заблокированы вами: <b>{stats['banned']}</b>",
+    ]
+    if "songs" in extra:
+        lines.append(f"🎵 Треков в каталоге: <b>{extra['songs']}</b>")
+    if "channels" in extra:
+        lines.append(f"📢 Обязательных каналов: <b>{extra['channels']}</b>")
+    try:
+        admins = len(get_settings_admin_ids(context)) + sum(
+            1
+            for record in await db.list_users(offset=0, limit=1000)
+            if record.is_admin and record.user_id not in get_settings_admin_ids(context)
+        )
+        lines.append(f"👑 Администраторов: <b>{admins}</b>")
+    except Exception:
+        logger.debug("Could not count admins", exc_info=True)
+
+    await _render_panel(update, context, "\n".join(lines), InlineKeyboardMarkup(_back()))
+
+
+def get_settings_admin_ids(context: ContextTypes.DEFAULT_TYPE) -> set[int]:
+    settings = context.application.bot_data.get("settings")
+    return set(getattr(settings, "admin_ids", ()) or ())
 
 
 # ----------------------------------------------------------------------------
@@ -195,12 +392,13 @@ async def show_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         ],
         *_back(),
     ]
-    await query.message.edit_text(
+    await _render_panel(
+        update,
+        context,
         "🎤 Распознавание голосовых/аудио сообщений\n\n"
         f"Текущий статус: <b>{'включено' if current else 'выключено'}</b>\n\n"
         "Оно определяет песню через Shazam и затем показывает результат поиском.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        InlineKeyboardMarkup(keyboard),
     )
 
 
@@ -243,68 +441,171 @@ async def show_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:menu")])
     panel_text = "\n".join(lines)
     panel_markup = InlineKeyboardMarkup(rows)
-    if query and query.message:
-        await query.message.edit_text(panel_text, reply_markup=panel_markup)
-    else:
-        chat_id = context.user_data.get("admin_panel_chat_id")
-        message_id = context.user_data.get("admin_panel_message_id")
-        if chat_id and message_id:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id,
-                text=panel_text, reply_markup=panel_markup,
-            )
+    await _render_panel(update, context, panel_text, panel_markup, parse_mode=None)
+
+
+_TELEGRAM_LINK = re.compile(
+    r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/(.+)$",
+    re.IGNORECASE,
+)
+
+
+def _channel_candidates(value: str) -> list[str]:
+    """Every accepted way of naming a channel, turned into get_chat arguments.
+
+    Handles: ``@name``, ``name``, ``https://t.me/name``, ``t.me/name``,
+    ``https://t.me/name/12``, private ``https://t.me/c/123456/1`` links, invite
+    links (``t.me/+abc`` / ``t.me/joinchat/abc``) and raw numeric ids.
+    """
+    raw = (value or "").strip().strip("<>").strip()
+    if not raw:
+        return []
+
+    candidates: list[str] = []
+
+    def add(candidate) -> None:
+        text = str(candidate).strip().strip("/")
+        if text and text not in candidates:
+            candidates.append(text)
+
+    link = _TELEGRAM_LINK.match(raw)
+    if link:
+        parts = [part for part in link.group(1).split("/") if part]
+        if parts:
+            head = parts[0]
+            if head.lower() == "joinchat" and len(parts) > 1:
+                # Old style invite link - Telegram wants the whole URL.
+                add(raw if raw.lower().startswith("http") else f"https://t.me/joinchat/{parts[1]}")
+            elif head.startswith("+"):
+                add(raw if raw.lower().startswith("http") else f"https://t.me/{head}")
+            elif head.lower() == "c" and len(parts) > 1 and parts[1].isdigit():
+                # Private channel: t.me/c/<internal id>/<message>
+                add(f"-100{parts[1]}")
+            else:
+                add(head.lstrip("@"))
+    elif raw.startswith("+"):
+        add(f"https://t.me/{raw}")
+
+    text = raw.lstrip("@")
+    if text.lstrip("-").isdigit():
+        add(text)
+    elif not link and not text.startswith("+") and "/" not in text and "." not in text:
+        add(text)
+    return candidates
+
+
+async def _resolve_chat(context: ContextTypes.DEFAULT_TYPE, candidates: list[str]):
+    """Try every candidate until Telegram answers. Returns (chat, error)."""
+    errors: list[str] = []
+    for candidate in candidates:
+        reference = int(candidate) if candidate.lstrip("-").isdigit() else candidate
+        try:
+            return await context.bot.get_chat(reference), None
+        except TelegramError as exc:
+            errors.append(f"{candidate}: {exc}")
+            logger.info("get_chat(%r) failed: %s", candidate, exc)
+    return None, "; ".join(errors)
+
+
+async def _bot_is_channel_admin(context: ContextTypes.DEFAULT_TYPE, chat) -> bool | None:
+    """True/False when Telegram answered, ``None`` when it could not decide.
+
+    ``getChatAdministrators`` is checked first because it is the most reliable
+    answer for a bot that really is an admin; ``getChatMember`` is the fallback.
+    An inconclusive result must never turn into "the bot is not an admin".
+    """
+    try:
+        me = await context.bot.get_me()
+    except TelegramError as exc:
+        logger.warning("Could not resolve the bot identity: %s", exc)
+        return None
+    my_username = (getattr(me, "username", None) or "").lower()
+
+    try:
+        administrators = await context.bot.get_chat_administrators(chat.id)
+        for member in administrators or []:
+            user = getattr(member, "user", None)
+            if user is None:
+                continue
+            if getattr(user, "id", None) == me.id:
+                return True
+            username = (getattr(user, "username", None) or "").lower()
+            if my_username and username == my_username:
+                return True
+        return False
+    except TelegramError as exc:
+        logger.info("get_chat_administrators(%s) failed: %s", chat.id, exc)
+
+    try:
+        member = await context.bot.get_chat_member(chat.id, me.id)
+        return getattr(member, "status", None) in {"creator", "administrator"}
+    except TelegramError as exc:
+        logger.info("get_chat_member(%s) failed: %s", chat.id, exc)
+    return None
 
 
 async def _add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, value: str) -> None:
     message = update.effective_message
     if not message:
         return
-    handle = value.strip()
-    if handle.startswith("https://t.me/"):
-        handle = handle.split("https://t.me/")[1]
-    handle = handle.split("/")[0].lstrip("@")
-    if not handle or handle.lower() in {"joinchat", "addtopic", "s"}:
-        await message.reply_text("❌ Не понял ссылку. Пришлите username канала, например @MyChannel или ссылку https://t.me/MyChannel")
-        return
-    try:
-        # get_chat accepts both public usernames and numeric IDs.  Numeric IDs
-        # are required for private channels, which have no @username.
-        chat_ref = int(handle) if handle.lstrip("-").isdigit() else handle
-        chat = await context.bot.get_chat(chat_ref)
-        bot = await context.bot.get_me()
-        bot_member = await context.bot.get_chat_member(chat.id, bot.id)
-    except (BadRequest, Forbidden) as exc:
-        logger.warning("Could not resolve channel %s: %s", handle, exc)
+    candidates = _channel_candidates(value)
+    if not candidates:
         await message.reply_text(
-            "❌ Не удалось получить канал. Убедитесь, что бот добавлен в канал как администратор "
-            "и что вы прислали верный @username или ссылку."
+            "❌ Не понял ссылку. Пришлите username канала, например @MyChannel "
+            "или ссылку https://t.me/MyChannel"
         )
         return
-    # Telegram does not expose a reliable "bot is admin" flag through
-    # get_chat; get_chat_member is the authoritative check.
-    if chat.type not in {"channel", "supergroup", "group"}:
+
+    chat, error = await _resolve_chat(context, candidates)
+    if chat is None:
+        logger.warning("Could not resolve channel %r (%s)", value, error)
+        await message.reply_text(
+            "❌ Не удалось открыть канал. Проверьте, что:\n"
+            "• бот добавлен в канал как администратор;\n"
+            "• ссылка или @username верные (для частного канала пришлите "
+            "пригласительную ссылку t.me/+… или ID вида -100…).\n\n"
+            f"<i>Ответ Telegram: {error or 'неизвестная ошибка'}</i>",
+            parse_mode="HTML",
+        )
+        await show_channels(update, context)
+        return
+
+    if getattr(chat, "type", None) not in {"channel", "supergroup", "group"}:
         await message.reply_text("Это не канал/группа.")
+        await show_channels(update, context)
         return
-    if bot_member.status not in {"administrator", "creator"}:
-        await message.reply_text(
-            "❌ Бот найден, но не является администратором этого канала. "
-            "Сделайте бота администратором и повторите попытку."
-        )
-        return
-    username = chat.username.lstrip("@") if chat.username else None
+
+    is_admin = await _bot_is_channel_admin(context, chat)
+    username = chat.username.lstrip("@") if getattr(chat, "username", None) else None
+    title = getattr(chat, "title", None) or username or str(chat.id)
+
     try:
         await get_database(context).add_required_channel(
-            chat_id=chat.id, username=username, title=chat.title
+            chat_id=chat.id, username=username, title=title
         )
     except Exception:
         logger.exception("Could not save channel")
         await message.reply_text("❌ Не удалось сохранить канал.")
+        await show_channels(update, context)
         return
-    await message.reply_text(
-        f"✅ Канал добавлен: <b>{chat.title}</b> (@{username})" if username
-        else f"✅ Канал добавлен: <b>{chat.title}</b>",
-        parse_mode="HTML",
-    )
+
+    label = f"<b>{title}</b>" + (f" (@{username})" if username else "")
+    if is_admin is False:
+        notice = (
+            f"✅ Канал добавлен: {label}\n\n"
+            "⚠️ Бот пока не администратор этого канала — Telegram не даст "
+            "проверять подписку. Сделайте бота администратором."
+        )
+    elif is_admin is None:
+        notice = (
+            f"✅ Канал добавлен: {label}\n\n"
+            "ℹ️ Права бота проверить не удалось (Telegram не ответил), канал "
+            "сохранён. Если подписка не проверяется — убедитесь, что бот "
+            "администратор канала."
+        )
+    else:
+        notice = f"✅ Канал добавлен: {label}"
+    await message.reply_text(notice, parse_mode="HTML")
     await show_channels(update, context)
 
 
@@ -337,9 +638,12 @@ async def show_ban_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         [InlineKeyboardButton("📋 Список пользователей", callback_data="adm:list:0")],
         *_back(),
     ]
-    await query.message.edit_text(
+    await _render_panel(
+        update,
+        context,
         "⛔️ Блокировки\n\nВыберите действие. Заблокированный пользователь не сможет пользоваться ботом.",
-        reply_markup=InlineKeyboardMarkup(rows),
+        InlineKeyboardMarkup(rows),
+        parse_mode=None,
     )
 
 
@@ -350,9 +654,14 @@ async def ban_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, unban: 
     await query.answer()
     context.user_data["admin_wait"] = "unban" if unban else "ban"
     action = "разблокировать" if unban else "заблокировать"
-    await query.message.edit_text(
+    await _render_panel(
+        update,
+        context,
         f"Пришлите ID или @username пользователя, которого хотите {action}.\n\n"
-        "Например: 1234567890 или @username" + ("" if unban else "\n\nМожно добавить причину: 1234567890 спам")
+        "Например: 1234567890 или @username"
+        + ("" if unban else "\n\nМожно добавить причину: 1234567890 спам"),
+        InlineKeyboardMarkup(_back("⬅️ Отмена")),
+        parse_mode=None,
     )
 
 
@@ -467,10 +776,16 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE, page: i
         users = await db.list_users(offset=offset, limit=USER_PAGE_SIZE)
     except Exception:
         logger.exception("Could not list users")
-        await query.message.edit_text("Не удалось загрузить список пользователей.")
+        await _render_panel(
+            update, context, "Не удалось загрузить список пользователей.",
+            InlineKeyboardMarkup(_back()), parse_mode=None,
+        )
         return
     if not users:
-        await query.message.edit_text("Пользователей пока нет.", reply_markup=InlineKeyboardMarkup(_back()))
+        await _render_panel(
+            update, context, "Пользователей пока нет.",
+            InlineKeyboardMarkup(_back()), parse_mode=None,
+        )
         return
     context.chat_data["admin_list_page"] = page
     lines = ["📋 Пользователи:\n"]
@@ -490,11 +805,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE, page: i
         nav.append(InlineKeyboardButton("▶️", callback_data=f"adm:list:{page + 1}"))
     rows.append(nav)
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:ban_menu")])
-    await query.message.edit_text(
-        "\n".join(lines),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(rows),
-    )
+    await _render_panel(update, context, "\n".join(lines), InlineKeyboardMarkup(rows))
 
 
 async def _try_send_banned_notice(
@@ -546,7 +857,7 @@ async def show_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if is_owner(query.from_user.id, context):
         rows.append([InlineKeyboardButton("➕ Добавить администратора", callback_data="adm:add_admin_prompt")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:menu")])
-    await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
+    await _render_panel(update, context, "\n".join(lines), InlineKeyboardMarkup(rows))
 
 
 async def add_admin_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -555,10 +866,19 @@ async def add_admin_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     await query.answer()
     if not is_owner(query.from_user.id, context):
-        await query.message.edit_text("Только владелец может выдавать права администратора.")
+        await _render_panel(
+            update, context, "Только владелец может выдавать права администратора.",
+            InlineKeyboardMarkup(_back()), parse_mode=None,
+        )
         return
     context.user_data["admin_wait"] = "add_admin"
-    await query.message.edit_text("Пришлите ID или @username пользователя, которому выдать права администратора.")
+    await _render_panel(
+        update,
+        context,
+        "Пришлите ID или @username пользователя, которому выдать права администратора.",
+        InlineKeyboardMarkup(_back("⬅️ Отмена")),
+        parse_mode=None,
+    )
 
 
 async def _add_admin_by_text(update: Update, context: ContextTypes.DEFAULT_TYPE, value: str) -> None:
@@ -598,25 +918,31 @@ async def dispatch_admin_callback(update: Update, context: ContextTypes.DEFAULT_
     data = query.data
     if not data.startswith("adm:"):
         return False
-    if not await is_admin(query.from_user.id, context):
+    if not await is_admin(query.from_user.id, context, username=query.from_user.username):
         await query.answer("Нет доступа", show_alert=True)
         return True
 
     if data == "adm:menu":
         await query.answer()
-        await _open_menu(query.message, context, edit=True)
+        await _open_menu(update, context, edit=True)
     elif data == "adm:stats":
         await show_stats(update, context)
     elif data == "adm:channels":
         await show_channels(update, context)
     elif data == "adm:channel_add":
         context.user_data["admin_wait"] = "channel_add"
-        context.user_data["admin_panel_chat_id"] = query.message.chat_id
-        context.user_data["admin_panel_message_id"] = query.message.message_id
         await query.answer()
-        await query.message.edit_text(
-            "Пришлите @username канала или ссылку на него.\n\n"
-            "⚠️ Бот должен быть администратором канала."
+        await _render_panel(
+            update,
+            context,
+            "Пришлите канал одним из способов:\n"
+            "• @username, например <code>@MyChannel</code>\n"
+            "• ссылка <code>https://t.me/MyChannel</code>\n"
+            "• частный канал: <code>https://t.me/c/1234567890/1</code> или "
+            "пригласительная ссылка <code>https://t.me/+AbCdEf</code>\n"
+            "• числовой ID, например <code>-1001234567890</code>\n\n"
+            "⚠️ Бот должен быть администратором канала.",
+            InlineKeyboardMarkup(_back("⬅️ Отмена")),
         )
     elif data == "adm:ban_menu":
         await show_ban_menu(update, context)

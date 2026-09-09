@@ -46,9 +46,12 @@ async def register_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> U
     )
 
 
-async def is_admin(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+async def is_admin(user_id: int, context: ContextTypes.DEFAULT_TYPE, username: str | None = None) -> bool:
     settings = get_settings(context)
     if user_id in settings.admin_ids:
+        return True
+    # Owners who configured ADMIN_USERNAME instead of a numeric id.
+    if settings.is_owner_username(username):
         return True
     db = get_database(context)
     try:
@@ -56,7 +59,12 @@ async def is_admin(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     except Exception:
         logger.exception("Could not load admin status for %s", user_id)
         return False
-    return bool(record and record.is_admin)
+    if record and record.is_admin:
+        return True
+    # Last resort: the stored username of a known user matches the config.
+    if username is None and record and record.username:
+        return settings.is_owner_username(record.username)
+    return False
 
 
 def is_owner(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -147,7 +155,7 @@ async def require_subscriptions(
     message = update.effective_message
     if not user or not message:
         return True
-    if await is_admin(user.id, context):
+    if await is_admin(user.id, context, username=user.username):
         return True
     missing = await missing_channels(context, user.id)
     if not missing:
@@ -172,7 +180,7 @@ async def ensure_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
     message = update.effective_message
     if not user:
         return True
-    if await is_admin(user.id, context):
+    if await is_admin(user.id, context, username=user.username):
         return True
     reason = await user_block_reason(context, user.id)
     if reason is not None:

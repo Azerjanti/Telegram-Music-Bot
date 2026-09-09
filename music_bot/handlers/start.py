@@ -60,7 +60,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.debug("Could not clear blocked marker", exc_info=True)
 
     admin_note = ""
-    if user and await is_admin(user.id, context):
+    if user and await is_admin(user.id, context, username=user.username):
         admin_note = "\n\n🛠 Вы администратор — доступна команда /admin."
     await message.reply_text(
         "Добро пожаловать в музыкальный бот!\n"
@@ -86,13 +86,13 @@ async def menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data["mode"] = "voice"
         await message.reply_text("Отправьте голосовое сообщение или аудиофайл.")
     elif choice in _TOP:
-        from music_bot.handlers.search import send_spotify_top
+        from music_bot.handlers.search import TOP_LIMIT, send_spotify_top
 
-        await send_spotify_top(update, context, limit=50)
+        await send_spotify_top(update, context, limit=TOP_LIMIT)
     elif choice in _LOCAL:
-        from music_bot.handlers.search import send_local_top
+        from music_bot.handlers.search import TOP_LIMIT, send_local_top
 
-        await send_local_top(update, context, limit=50, title="Локальный топ")
+        await send_local_top(update, context, limit=TOP_LIMIT, title="Локальный топ")
     elif choice in _FAVORITES:
         from music_bot.handlers.favorites import show_favorites
 

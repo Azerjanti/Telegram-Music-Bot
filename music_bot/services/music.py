@@ -9,6 +9,11 @@ from telegram.ext import ContextTypes
 
 from music_bot.database import Database, Song
 from music_bot.downloader import SearchResult, YouTubeProvider
+from music_bot.track_buttons import (
+    get_pending_tracks,
+    replace_markup,
+    track_markup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,20 +37,40 @@ class MusicService:
         context: ContextTypes.DEFAULT_TYPE,
         query: str,
         limit: int = 30,
+        artist_mode: bool = False,
     ) -> None:
         """Search the cache and the audio provider, then show all found tracks in
         paginated pages with ‹ › arrows (page size = SEARCH_PAGE_SIZE).
+
+        ``artist_mode`` ("По исполнителю") additionally lists every catalogue
+        track by that artist instead of only the single best match.
         """
         message = update.effective_message
         chat = update.effective_chat
         if not message or not chat:
             return
-        await message.reply_text(f"🔍 Поиск по запросу: {query}")
+        prompt = "👤 Поиск по исполнителю" if artist_mode else "🔍 Поиск по запросу"
+        await message.reply_text(f"{prompt}: {query}")
         if _is_media_url(query):
             await self.send_query(update, context, query, source_url=query)
             return
 
-        cached = await self.database.search_song(query)
+        items: list[tuple[str, str]] = []
+        if artist_mode:
+            try:
+                catalogue_songs = await self.database.artist_songs(query)
+            except Exception:
+                logger.exception("Could not load catalogue songs for artist %r", query)
+                catalogue_songs = []
+            for song in catalogue_songs:
+                items.append((f"cached:{song.id}", f"☑️ {song.artist} — {song.title} (в каталоге)"))
+        else:
+            cached = await self.database.search_song(query)
+            if cached:
+                items.append(
+                    (f"cached:{cached.id}", f"☑️ {cached.artist} — {cached.title} (в каталоге)")
+                )
+
         youtube_results: list[SearchResult] = []
         if self.provider:
             try:
@@ -53,10 +78,6 @@ class MusicService:
             except Exception:
                 logger.exception("Search failed for query=%r", query)
                 youtube_results = []
-
-        items: list[tuple[str, str]] = []
-        if cached:
-            items.append((f"cached:{cached.id}", f"☑️ {cached.artist} — {cached.title} (в каталоге)"))
         for index, result in enumerate(youtube_results):
             items.append((f"result:{index}", result.label))
 
@@ -104,16 +125,23 @@ class MusicService:
                 return None
 
             async with self.download_slots:
+                sent = None
+                token: str | None = None
                 try:
                     downloaded = await self.provider.download(source_url or query)
                     if downloaded.path.stat().st_size > self.max_file_mb * 1024 * 1024:
                         raise RuntimeError("Файл превышает лимит Telegram")
+                    # The file_id is only known once Telegram accepts the upload,
+                    # so the ❤️ button first points at a short-lived token; it is
+                    # replaced by the permanent song callback right below.
+                    token = get_pending_tracks(context).reserve()
                     with downloaded.path.open("rb") as audio:
                         sent = await message.reply_audio(
                             audio=audio,
                             title=downloaded.metadata.title,
                             performer=downloaded.metadata.artist,
                             caption="Сохранено в каталоге бота",
+                            reply_markup=track_markup(token=token, is_favorite=False),
                         )
                 except Exception:
                     logger.exception("Audio download failed for query=%r", query)
@@ -123,16 +151,38 @@ class MusicService:
                     if "downloaded" in locals() and downloaded.path.exists():
                         downloaded.path.unlink(missing_ok=True)
 
-            if not sent.audio:
+            if not sent or not sent.audio:
                 return None
-            song = await self.database.save_song(
+            file_id = sent.audio.file_id
+            get_pending_tracks(context).attach(
+                token,
+                file_id=file_id,
                 title=downloaded.metadata.title,
                 artist=downloaded.metadata.artist,
-                file_id=sent.audio.file_id,
-                source_url=downloaded.metadata.source_url,
             )
-            await self.database.increment_play_count(song.id)
-            await sent.edit_reply_markup(reply_markup=self.track_actions(song, is_favorite=False))
+            song: Song | None = None
+            try:
+                song = await self.database.save_song(
+                    title=downloaded.metadata.title,
+                    artist=downloaded.metadata.artist,
+                    file_id=file_id,
+                    source_url=downloaded.metadata.source_url,
+                )
+                await self.database.increment_play_count(song.id)
+            except Exception:
+                # The track is already in the chat with working buttons - a broken
+                # catalogue must never take them away again.
+                logger.exception("Could not store downloaded track in the catalogue")
+            if song is not None:
+                is_favorite = False
+                user = update.effective_user
+                if user:
+                    try:
+                        is_favorite = await self.database.is_favorite(user.id, file_id)
+                    except Exception:
+                        logger.debug("Could not load favorite state", exc_info=True)
+                get_pending_tracks(context).drop(token)
+                await replace_markup(sent, track_markup(song=song, is_favorite=is_favorite))
             return song
         finally:
             try:
@@ -141,45 +191,42 @@ class MusicService:
                 logger.debug("Could not delete loading message", exc_info=True)
 
     async def _send_cached(self, update: Update, song: Song) -> None:
-        message = update.effective_message
+        await self._send_audio(update, song)
+
+    @staticmethod
+    def track_actions(song: Song, is_favorite: bool = False) -> InlineKeyboardMarkup:
+        """❤️ / 💔 + ❌ row for a track that is already in the catalogue."""
+        return track_markup(song=song, is_favorite=is_favorite)
+
+    async def _favorite_state(self, update: Update, song: Song) -> bool:
         user = update.effective_user
+        if not user:
+            return False
+        try:
+            return bool(await self.database.is_favorite(user.id, song.file_id))
+        except Exception:
+            # A failing favourite lookup must never stop the track being sent.
+            logger.debug("Could not load favorite state for %s", song.file_id, exc_info=True)
+            return False
+
+    async def _send_audio(self, update: Update, song: Song) -> None:
+        """Send a catalogue track. The ❤️/❌ row is attached in the same call, so
+        the buttons exist from the very first moment the audio is visible."""
+        message = update.effective_message
         if not message:
             return
-        is_favorite = bool(user and await self.database.is_favorite(user.id, song.file_id))
+        is_favorite = await self._favorite_state(update, song)
         await message.reply_audio(
             audio=song.file_id,
             title=song.title,
             performer=song.artist,
-            reply_markup=self.track_actions(song, is_favorite),
-        )
-
-    @staticmethod
-    def track_actions(song: Song, is_favorite: bool = False) -> InlineKeyboardMarkup:
-        favorite_label = "💔" if is_favorite else "❤️"
-        favorite_action = "remove" if is_favorite else "add"
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        favorite_label,
-                        callback_data=f"favorite:{favorite_action}:{song.id}",
-                    ),
-                    InlineKeyboardButton("❌", callback_data="search:back"),
-                ],
-            ]
+            reply_markup=track_markup(song=song, is_favorite=is_favorite),
         )
 
     async def send_song(self, update: Update, song: Song) -> None:
         message = update.effective_message
-        user = update.effective_user
         if message:
-            is_favorite = bool(user and await self.database.is_favorite(user.id, song.file_id))
-            await message.reply_audio(
-                audio=song.file_id,
-                title=song.title,
-                performer=song.artist,
-                reply_markup=self.track_actions(song, is_favorite),
-            )
+            await self._send_audio(update, song)
             await self.database.increment_play_count(song.id)
 
     @staticmethod
