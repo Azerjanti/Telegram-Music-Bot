@@ -155,7 +155,7 @@ class MusicService:
 
     @staticmethod
     def track_actions(song: Song, is_favorite: bool = False) -> InlineKeyboardMarkup:
-        favorite_label = "💔 Удалить из избранного" if is_favorite else "❤️"
+        favorite_label = "💔" if is_favorite else "❤️"
         favorite_action = "remove" if is_favorite else "add"
         return InlineKeyboardMarkup(
             [
@@ -164,10 +164,7 @@ class MusicService:
                         favorite_label,
                         callback_data=f"favorite:{favorite_action}:{song.id}",
                     ),
-                    InlineKeyboardButton(
-                        "🎤 Исполнитель",
-                        callback_data=f"artist:{song.artist[:50]}",
-                    ),
+                    InlineKeyboardButton("❌", callback_data="search:back"),
                 ],
             ]
         )
