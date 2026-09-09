@@ -32,6 +32,17 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer()
         return
 
+    # ❌ under a track → back to song search
+    if data == "search:back":
+        context.user_data["mode"] = "song"
+        await query.answer()
+        if query.message:
+            try:
+                await query.message.reply_text("Напишите название песни или исполнителя.")
+            except Exception:
+                logger.debug("Could not prompt search after ❌", exc_info=True)
+        return
+
     # ---- Mandatory channel re-check ---------------------------------------
     if data == "mrecheck":
         if not user:

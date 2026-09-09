@@ -8,16 +8,31 @@ from music_bot.access import ensure_access, is_admin, register_user
 logger = logging.getLogger(__name__)
 
 
+BTN_SEARCH = "🔍 Поиск песни"
+BTN_TOP = "🏆 Топ 100"
+BTN_ARTIST = "👤 По исполнителю"
+BTN_FAVORITES = "❤️ Избранное"
+BTN_LOCAL_TOP = "📈 Локальный топ"
+BTN_VOICE = "🎤 Поиск по голосу"
+
 MENU = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("Поиск песни"), KeyboardButton("Топ 100")],
-        [KeyboardButton("По исполнителю"), KeyboardButton("Избранное")],
-        [KeyboardButton("Локальный топ")],
-        [KeyboardButton("Поиск по голосу")],
+        [KeyboardButton(BTN_SEARCH), KeyboardButton(BTN_TOP)],
+        [KeyboardButton(BTN_ARTIST), KeyboardButton(BTN_FAVORITES)],
+        [KeyboardButton(BTN_LOCAL_TOP)],
+        [KeyboardButton(BTN_VOICE)],
     ],
     resize_keyboard=True,
     is_persistent=True,
 )
+
+# Old labels (without emoji) still match so leftover keyboards keep working.
+_SEARCH = {BTN_SEARCH, "Поиск песни", "🎵 Поиск песни"}
+_ARTIST = {BTN_ARTIST, "По исполнителю", "Поиск по исполнителю"}
+_VOICE = {BTN_VOICE, "Поиск по голосу"}
+_TOP = {BTN_TOP, "Топ 100"}
+_LOCAL = {BTN_LOCAL_TOP, "Локальный топ"}
+_FAVORITES = {BTN_FAVORITES, "Избранное"}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -60,25 +75,25 @@ async def menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if not await ensure_access(update, context):
         return
-    choice = message.text or ""
-    if choice == "Поиск песни":
+    choice = (message.text or "").strip()
+    if choice in _SEARCH:
         context.user_data["mode"] = "song"
         await message.reply_text("Напишите название песни или исполнителя.")
-    elif choice in {"Поиск по исполнителю", "По исполнителю"}:
+    elif choice in _ARTIST:
         context.user_data["mode"] = "artist"
         await message.reply_text("Напишите имя исполнителя.")
-    elif choice == "Поиск по голосу":
+    elif choice in _VOICE:
         context.user_data["mode"] = "voice"
         await message.reply_text("Отправьте голосовое сообщение или аудиофайл.")
-    elif choice == "Топ 100":
+    elif choice in _TOP:
         from music_bot.handlers.search import send_spotify_top
 
         await send_spotify_top(update, context, limit=50)
-    elif choice == "Локальный топ":
+    elif choice in _LOCAL:
         from music_bot.handlers.search import send_local_top
 
         await send_local_top(update, context, limit=50, title="Локальный топ")
-    elif choice == "Избранное":
+    elif choice in _FAVORITES:
         from music_bot.handlers.favorites import show_favorites
 
         await show_favorites(update, context)

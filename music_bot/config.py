@@ -12,14 +12,19 @@ def _as_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _as_int_list(name: str) -> set[int]:
-    """Parse a comma/space separated list of numeric IDs from an env var."""
-    raw = os.getenv(name, "")
+# Primary bot owner Telegram user id (used when ADMIN_ID / ADMIN_IDS are unset).
+DEFAULT_ADMIN_ID = 8377297659
+
+
+def _as_int_list(*names: str) -> set[int]:
+    """Parse a comma/space separated list of numeric IDs from env vars."""
     ids: set[int] = set()
-    for part in raw.replace(";", ",").replace("\n", ",").split(","):
-        part = part.strip()
-        if part.isdigit():
-            ids.add(int(part))
+    for name in names:
+        raw = os.getenv(name, "") or ""
+        for part in raw.replace(";", ",").replace("\n", ",").split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.add(int(part))
     return ids
 
 
@@ -48,9 +53,8 @@ class Settings:
 
         cache_dir = Path(os.getenv("AUDIO_CACHE_DIR", "/tmp/music-bot/audio"))
         cache_dir.mkdir(parents=True, exist_ok=True)
-        # Default owner id kept for convenience; override via ADMIN_IDS env var
-        # (comma separated list), e.g. ADMIN_IDS=8490020175.
-        admin_ids = _as_int_list("ADMIN_IDS") or {8490020175}
+        # Owner id: ADMIN_ID (single) and/or ADMIN_IDS (comma-separated).
+        admin_ids = _as_int_list("ADMIN_ID", "ADMIN_IDS") or {DEFAULT_ADMIN_ID}
         return cls(
             bot_token=token,
             database_url=os.getenv("DATABASE_URL"),
