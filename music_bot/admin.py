@@ -101,12 +101,17 @@ async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _open_menu(message, context)
 
 
-async def _open_menu(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _open_menu(message, context: ContextTypes.DEFAULT_TYPE, edit: bool = False) -> None:
     context.user_data.pop("admin_wait", None)
-    await message.reply_text(
-        "🛠 Панель администратора\nВыберите действие:",
-        reply_markup=_menu_keyboard(),
-    )
+    text = "🛠 Панель администратора\nВыберите действие:"
+    markup = _menu_keyboard()
+    if edit:
+        try:
+            await message.edit_text(text, reply_markup=markup)
+            return
+        except BadRequest:
+            pass
+    await message.reply_text(text, reply_markup=markup)
 
 
 async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -155,7 +160,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         stats = await db.user_stats()
     except Exception:
         logger.exception("Could not load stats")
-        await query.message.reply_text("Не удалось получить статистику.", reply_markup=InlineKeyboardMarkup(_back()))
+        await query.message.edit_text("Не удалось получить статистику.", reply_markup=InlineKeyboardMarkup(_back()))
         return
     text = (
         "📊 Статистика бота\n\n"
@@ -164,7 +169,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"🚫 Заблокировали бота: <b>{stats['blocked']}</b>\n"
         f"🔒 Заблокированы вами: <b>{stats['banned']}</b>"
     )
-    await query.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(_back()))
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(_back()))
 
 
 # ----------------------------------------------------------------------------
@@ -190,7 +195,7 @@ async def show_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         ],
         *_back(),
     ]
-    await query.message.reply_text(
+    await query.message.edit_text(
         "🎤 Распознавание голосовых/аудио сообщений\n\n"
         f"Текущий статус: <b>{'включено' if current else 'выключено'}</b>\n\n"
         "Оно определяет песню через Shazam и затем показывает результат поиском.",
@@ -214,9 +219,8 @@ async def set_voice(update: Update, context: ContextTypes.DEFAULT_TYPE, enabled:
 
 async def show_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    if not query:
-        return
-    await query.answer()
+    if query:
+        await query.answer()
     db = get_database(context)
     try:
         channels = await db.list_required_channels()
@@ -237,7 +241,18 @@ async def show_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             [InlineKeyboardButton(f"🗑 Удалить: {channel.title or channel.username or channel.chat_id}", callback_data=f"adm:channel_del:{channel.id}")]
         )
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:menu")])
-    await query.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
+    panel_text = "\n".join(lines)
+    panel_markup = InlineKeyboardMarkup(rows)
+    if query and query.message:
+        await query.message.edit_text(panel_text, reply_markup=panel_markup)
+    else:
+        chat_id = context.user_data.get("admin_panel_chat_id")
+        message_id = context.user_data.get("admin_panel_message_id")
+        if chat_id and message_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=panel_text, reply_markup=panel_markup,
+            )
 
 
 async def _add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, value: str) -> None:
@@ -252,7 +267,12 @@ async def _add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, value
         await message.reply_text("❌ Не понял ссылку. Пришлите username канала, например @MyChannel или ссылку https://t.me/MyChannel")
         return
     try:
-        chat = await context.bot.get_chat(handle)
+        # get_chat accepts both public usernames and numeric IDs.  Numeric IDs
+        # are required for private channels, which have no @username.
+        chat_ref = int(handle) if handle.lstrip("-").isdigit() else handle
+        chat = await context.bot.get_chat(chat_ref)
+        bot = await context.bot.get_me()
+        bot_member = await context.bot.get_chat_member(chat.id, bot.id)
     except (BadRequest, Forbidden) as exc:
         logger.warning("Could not resolve channel %s: %s", handle, exc)
         await message.reply_text(
@@ -260,9 +280,16 @@ async def _add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, value
             "и что вы прислали верный @username или ссылку."
         )
         return
-    # Only allow channels / groups / supergroups.
+    # Telegram does not expose a reliable "bot is admin" flag through
+    # get_chat; get_chat_member is the authoritative check.
     if chat.type not in {"channel", "supergroup", "group"}:
         await message.reply_text("Это не канал/группа.")
+        return
+    if bot_member.status not in {"administrator", "creator"}:
+        await message.reply_text(
+            "❌ Бот найден, но не является администратором этого канала. "
+            "Сделайте бота администратором и повторите попытку."
+        )
         return
     username = chat.username.lstrip("@") if chat.username else None
     try:
@@ -310,7 +337,7 @@ async def show_ban_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         [InlineKeyboardButton("📋 Список пользователей", callback_data="adm:list:0")],
         *_back(),
     ]
-    await query.message.reply_text(
+    await query.message.edit_text(
         "⛔️ Блокировки\n\nВыберите действие. Заблокированный пользователь не сможет пользоваться ботом.",
         reply_markup=InlineKeyboardMarkup(rows),
     )
@@ -323,7 +350,7 @@ async def ban_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, unban: 
     await query.answer()
     context.user_data["admin_wait"] = "unban" if unban else "ban"
     action = "разблокировать" if unban else "заблокировать"
-    await query.message.reply_text(
+    await query.message.edit_text(
         f"Пришлите ID или @username пользователя, которого хотите {action}.\n\n"
         "Например: 1234567890 или @username" + ("" if unban else "\n\nМожно добавить причину: 1234567890 спам")
     )
@@ -440,10 +467,10 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE, page: i
         users = await db.list_users(offset=offset, limit=USER_PAGE_SIZE)
     except Exception:
         logger.exception("Could not list users")
-        await query.message.reply_text("Не удалось загрузить список пользователей.")
+        await query.message.edit_text("Не удалось загрузить список пользователей.")
         return
     if not users:
-        await query.message.reply_text("Пользователей пока нет.", reply_markup=InlineKeyboardMarkup(_back()))
+        await query.message.edit_text("Пользователей пока нет.", reply_markup=InlineKeyboardMarkup(_back()))
         return
     context.chat_data["admin_list_page"] = page
     lines = ["📋 Пользователи:\n"]
@@ -463,7 +490,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE, page: i
         nav.append(InlineKeyboardButton("▶️", callback_data=f"adm:list:{page + 1}"))
     rows.append(nav)
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:ban_menu")])
-    await query.message.reply_text(
+    await query.message.edit_text(
         "\n".join(lines),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(rows),
@@ -519,7 +546,7 @@ async def show_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if is_owner(query.from_user.id, context):
         rows.append([InlineKeyboardButton("➕ Добавить администратора", callback_data="adm:add_admin_prompt")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:menu")])
-    await query.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
+    await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def add_admin_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -528,10 +555,10 @@ async def add_admin_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     await query.answer()
     if not is_owner(query.from_user.id, context):
-        await query.message.reply_text("Только владелец может выдавать права администратора.")
+        await query.message.edit_text("Только владелец может выдавать права администратора.")
         return
     context.user_data["admin_wait"] = "add_admin"
-    await query.message.reply_text("Пришлите ID или @username пользователя, которому выдать права администратора.")
+    await query.message.edit_text("Пришлите ID или @username пользователя, которому выдать права администратора.")
 
 
 async def _add_admin_by_text(update: Update, context: ContextTypes.DEFAULT_TYPE, value: str) -> None:
@@ -576,15 +603,18 @@ async def dispatch_admin_callback(update: Update, context: ContextTypes.DEFAULT_
         return True
 
     if data == "adm:menu":
-        await _open_menu(query.message, context)
+        await query.answer()
+        await _open_menu(query.message, context, edit=True)
     elif data == "adm:stats":
         await show_stats(update, context)
     elif data == "adm:channels":
         await show_channels(update, context)
     elif data == "adm:channel_add":
         context.user_data["admin_wait"] = "channel_add"
+        context.user_data["admin_panel_chat_id"] = query.message.chat_id
+        context.user_data["admin_panel_message_id"] = query.message.message_id
         await query.answer()
-        await query.message.reply_text(
+        await query.message.edit_text(
             "Пришлите @username канала или ссылку на него.\n\n"
             "⚠️ Бот должен быть администратором канала."
         )

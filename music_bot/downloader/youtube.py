@@ -166,29 +166,38 @@ def _get_player_skip() -> List[str]:
     return default_skip
 
 
-def _get_impersonate_target() -> Optional[str]:
-    if not _env_bool("YTDLP_ENABLE_IMPERSONATION", True):
+def _get_impersonate_target() -> Optional[Any]:
+    """Return yt-dlp's typed impersonation target, never a plain string.
+
+    yt-dlp 2026.x validates ``opts['impersonate']`` with an assertion.  Keep
+    this optional: installations without curl_cffi must continue using the
+    normal client rotation, and a bad environment value must not kill a
+    download before the first client is tried.
+    """
+    if not _env_bool("YTDLP_ENABLE_IMPERSONATION", True) or not _has_curl_cffi():
         return None
 
-    for env_name in ("YTDLP_IMPERSONATE", "YTDLP_IMPERSONATION"):
-        val = _env_str(env_name, None)
-        if val:
-            val_lower = val.strip().lower()
-            if val_lower in {"0", "false", "none", "off", "disable", "disabled"}:
+    value: Optional[str] = None
+    for env_name in ("YTDLP_IMPERSONATE", "YTDLP_DEFAULT_IMPERSONATE", "YTDLP_IMPERSONATION"):
+        candidate = _env_str(env_name, None)
+        if candidate:
+            if candidate.strip().lower() in {"0", "false", "none", "off", "disable", "disabled"}:
                 logger.info("Impersonation disabled via %s", env_name)
                 return None
-            logger.info("Using impersonation from %s: %s", env_name, val)
-            return val.strip()
+            value = candidate.strip()
+            break
+    if not value:
+        value = "chrome"
 
-    if _has_curl_cffi():
-        default_impersonate = _env_str("YTDLP_DEFAULT_IMPERSONATE", "chrome")
-        if default_impersonate and default_impersonate.lower() not in {"0", "false", "none"}:
-            logger.debug("Auto-enabling impersonation: %s (curl_cffi available)", default_impersonate)
-            return default_impersonate
-    else:
-        logger.debug("curl_cffi not available, impersonation disabled (install curl_cffi to enable)")
+    try:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
 
-    return None
+        target = ImpersonateTarget.from_str(value)
+        logger.info("Using typed yt-dlp impersonation target: %s", value)
+        return target
+    except (ImportError, AttributeError, TypeError, ValueError, AssertionError) as exc:
+        logger.warning("Disabling invalid yt-dlp impersonation target %r: %s", value, exc)
+        return None
 
 
 def _get_format() -> str:

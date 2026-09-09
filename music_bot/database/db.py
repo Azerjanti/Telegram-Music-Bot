@@ -597,7 +597,7 @@ class Database:
             async with self._pool.acquire() as connection:
                 total = await connection.fetchval("SELECT COUNT(*) FROM users")
                 active = await connection.fetchval(
-                    "SELECT COUNT(*) FROM users WHERE last_seen_at >= NOW() - ($1 || ' days')::interval",
+                    "SELECT COUNT(*) FROM users WHERE last_seen_at >= NOW() - ($1 * INTERVAL '1 day')",
                     active_days,
                 )
                 blocked = await connection.fetchval(
