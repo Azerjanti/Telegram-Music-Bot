@@ -22,6 +22,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
+from typing import Any
+
 from music_bot.access import get_database, is_admin, is_owner
 from music_bot.database import UserRecord
 from music_bot.track_buttons import is_not_modified
