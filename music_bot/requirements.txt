@@ -1,6 +1,7 @@
 python-telegram-bot==20.7
 supabase==2.3.0
-yt-dlp==2024.1.0
+yt-dlp>=2026.8.19
+curl_cffi>=0.8.0
 rapidfuzz==3.6.1
 spotipy==2.23.0
 shazamio==0.4.0

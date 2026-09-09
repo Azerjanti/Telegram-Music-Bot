@@ -12,5 +12,6 @@ dependencies = [
     "httpx>=0.28.1",
     "spotipy>=2.25.1",
     "yt-dlp>=2026.8.19",
+    "curl_cffi>=0.8.0",
     "audioop-lts>=0.2.2",
 ]
