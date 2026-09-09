@@ -54,3 +54,12 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 music_bot/.cache/
+
+# local secrets (use .env.example as the template)
+.env
+.env.*
+!.env.example
+
+# pytest / coverage
+.pytest_cache/
+.coverage

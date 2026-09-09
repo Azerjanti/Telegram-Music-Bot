@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Ensure repo root is in path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -120,7 +122,11 @@ def test_impersonation_disabled_by_env():
 def test_impersonation_custom_target():
     with patch.dict(os.environ, {"YTDLP_IMPERSONATE": "safari", "YTDLP_ENABLE_IMPERSONATION": "true"}):
         target = _get_impersonate_target()
-        assert target == "safari"
+        if target is None:
+            pytest.skip("curl_cffi/yt-dlp impersonation is not available in this environment")
+        # yt-dlp 2026.x wants a typed ImpersonateTarget, not a plain string.
+        assert str(target).startswith("safari"), target
+        assert getattr(target, "client", target) == "safari"
 
 
 def test_base_ydl_options_hardening():
