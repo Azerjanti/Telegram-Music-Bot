@@ -111,6 +111,7 @@ class MusicService:
         context: ContextTypes.DEFAULT_TYPE,
         query: str,
         source_url: str | None = None,
+        expected: tuple[str, str] | None = None,
     ) -> Song | None:
         message = update.effective_message
         chat = update.effective_chat
@@ -178,14 +179,23 @@ class MusicService:
                 sent = None
                 token: str | None = None
                 try:
-                    # Provider may be a fake in tests that doesn't accept progress_callback
+                    # Provider may be a fake in tests that doesn't accept all kwargs
+                    expected_artist, expected_title = expected or (None, None)
                     try:
-                        downloaded = await self.provider.download(source_url or query, progress_callback=_progress_hook)  # type: ignore[call-arg]
+                        downloaded = await self.provider.download(  # type: ignore[call-arg]
+                            source_url or query,
+                            progress_callback=_progress_hook,
+                            expected_artist=expected_artist,
+                            expected_title=expected_title,
+                        )
                     except TypeError:
-                        # fallback for providers without progress_callback param
-                        downloaded = await self.provider.download(source_url or query)
-                        # simulate at least 100% for test providers
-                        _progress_hook(100)
+                        try:
+                            downloaded = await self.provider.download(source_url or query, progress_callback=_progress_hook)  # type: ignore[call-arg]
+                        except TypeError:
+                            # fallback for providers without progress_callback param
+                            downloaded = await self.provider.download(source_url or query)
+                            # simulate at least 100% for test providers
+                            _progress_hook(100)
                     if downloaded.path.stat().st_size > self.max_file_mb * 1024 * 1024:
                         raise RuntimeError("Файл превышает лимит Telegram")
                     # The file_id is only known once Telegram accepts the upload,

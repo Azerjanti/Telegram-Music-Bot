@@ -130,7 +130,11 @@ async def voice_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await message.reply_text(f"Распознано: {title} — {artist}")
         else:
             await message.reply_text(f"Распознано: {title} — {artist}")
-        await service.send_query(update, context, f"{artist} {title}")
+        # Pass the recognized artist/title so the downloader can verify the
+        # YouTube candidate instead of blindly taking the #1 search result.
+        await service.send_query(
+            update, context, f"{artist} {title}", expected=(str(artist), str(title))
+        )
     except Exception:
         logger.exception("Voice recognition failed")
         if status_msg:
