@@ -458,10 +458,24 @@ class YouTubeProvider:
             results.append(SearchResult(metadata.title, metadata.artist, url))
         return results[:limit]
 
-    async def download(self, query: str, progress_callback=None) -> DownloadedTrack:
-        return await asyncio.to_thread(self._download_sync, query, progress_callback)
+    async def download(
+        self,
+        query: str,
+        progress_callback=None,
+        expected_artist: Optional[str] = None,
+        expected_title: Optional[str] = None,
+    ) -> DownloadedTrack:
+        return await asyncio.to_thread(
+            self._download_sync, query, progress_callback, expected_artist, expected_title
+        )
 
-    def _download_sync(self, query: str, progress_callback=None) -> DownloadedTrack:
+    def _download_sync(
+        self,
+        query: str,
+        progress_callback=None,
+        expected_artist: Optional[str] = None,
+        expected_title: Optional[str] = None,
+    ) -> DownloadedTrack:
         try:
             import yt_dlp
         except ImportError as exc:
@@ -557,7 +571,15 @@ class YouTubeProvider:
                 )
 
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    search_query = query if _is_url(query) else f"ytsearch1:{query} official audio"
+                    search_query = query
+                    if not _is_url(query):
+                        # When we know the expected artist/title (voice search),
+                        # verify the top-5 candidates and download the closest
+                        # match instead of blindly trusting the #1 result.
+                        chosen = _select_best_match(
+                            ydl, query, expected_artist, expected_title
+                        )
+                        search_query = chosen or f"ytsearch1:{query}"
                     info = ydl.extract_info(search_query, download=True)
                     if not info:
                         raise RuntimeError("Аудио не найдено")
@@ -631,3 +653,67 @@ def _is_url(value: str) -> bool:
     return value.startswith(("https://", "http://")) and (
         "youtube.com" in value or "youtu.be" in value or "tiktok.com" in value
     )
+
+
+# ---------------------------------------------------------------------------
+# Voice-search verification: pick the YouTube candidate closest to the
+# recognized artist/title instead of the (sometimes wrong) #1 search result.
+# ---------------------------------------------------------------------------
+
+MIN_MATCH_SCORE = 50.0
+
+
+def _norm_text(value: str) -> str:
+    # Keep latin/cyrillic/arabic letters and digits (covers TR/RU/EN titles).
+    return re.sub(r"[^0-9a-z\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff\u1e00-\u1eff]+", " ", (value or "").lower()).strip()
+
+
+def _entry_match_score(entry: Dict[str, Any], expected_artist: str, expected_title: str) -> float:
+    from rapidfuzz import fuzz
+
+    metadata = parse_track_title(
+        entry.get("track") or entry.get("title") or "",
+        entry.get("artist") or entry.get("uploader"),
+    )
+    title_score = fuzz.WRatio(_norm_text(expected_title), _norm_text(metadata.title))
+    artist_score = fuzz.WRatio(_norm_text(expected_artist), _norm_text(metadata.artist))
+    return 0.6 * title_score + 0.4 * artist_score
+
+
+def _select_best_match(
+    ydl, query: str, expected_artist: Optional[str], expected_title: Optional[str]
+) -> Optional[str]:
+    """Return the URL of the search entry closest to the recognized track.
+
+    ``None`` means "nothing passed the similarity threshold" - the caller
+    then falls back to the plain top search result.
+    """
+    if not expected_title:
+        return None
+    try:
+        info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+    except Exception as exc:
+        logger.warning("Pre-selection search failed for query=%r: %s", query, exc)
+        return None
+    entries = [entry for entry in (info or {}).get("entries", []) if entry]
+    if not entries:
+        return None
+    scored = sorted(
+        (
+            (_entry_match_score(entry, expected_artist or "", expected_title), entry)
+            for entry in entries
+        ),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    best_score, best_entry = scored[0]
+    logger.info(
+        "Voice pre-selection for %r: best=%r score=%.1f (threshold=%.1f)",
+        query,
+        best_entry.get("title"),
+        best_score,
+        MIN_MATCH_SCORE,
+    )
+    if best_score < MIN_MATCH_SCORE:
+        return None
+    return best_entry.get("webpage_url") or best_entry.get("url")
